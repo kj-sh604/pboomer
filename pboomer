@@ -11,7 +11,7 @@ import sys
 import time
 
 
-USAGE = """Usage: boomer [OPTIONS]
+USAGE = """usage: boomer [OPTIONS]
   -d, --delay <seconds: float>  delay execution of the program by provided <seconds>
   -h, --help                    show this help and exit
       --new-config [filepath]   generate a new default config at [filepath]
