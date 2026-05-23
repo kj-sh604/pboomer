@@ -475,7 +475,7 @@ def upload_texture(gl_module, width: int, height: int, bgra_data: bytes) -> None
     gl_module.glTexImage2D(
         gl_module.GL_TEXTURE_2D,
         0,
-        gl_module.GL_RGB,
+        gl_module.GL_RGBA8,
         width,
         height,
         0,
@@ -485,8 +485,29 @@ def upload_texture(gl_module, width: int, height: int, bgra_data: bytes) -> None
     )
 
 
-# main entrypoint
+# main entrypoint - gl imports are deferred so --help/--version don't require them
 def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
+    import threading
+
+    # capture screenshot in a background thread while heavy GL imports load -
+    # this overlaps the two largest startup costs to reduce time-to-interactive
+    _ss: dict = {"screenshot": None, "root": None, "error": None}
+
+    def _capture() -> None:
+        try:
+            import mss as _m  # type: ignore
+            with _m.MSS() as s:
+                if not s.monitors:
+                    _ss["error"] = SystemExit("No monitors found")
+                    return
+                _ss["root"] = s.monitors[0].copy()
+                _ss["screenshot"] = s.grab(_ss["root"])
+        except Exception as exc:
+            _ss["error"] = exc
+
+    _ss_thread = threading.Thread(target=_capture, daemon=True)
+    _ss_thread.start()
+
     try:
         import glfw  # type: ignore
         import numpy  # type: ignore
@@ -497,6 +518,10 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
             "Missing runtime dependencies. Install with `pip install -r requirements.txt`."
         ) from exc
 
+    _ss_thread.join()
+    if _ss["error"] is not None:
+        raise _ss["error"]
+
     if not glfw.init():
         raise SystemExit("Failed to initialize GLFW")
 
@@ -504,11 +529,8 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
     key_mapper = X11KeyMapper()
     try:
         with mss.MSS() as sct:
-            if not sct.monitors:
-                raise SystemExit("No monitors found")
-
-            root = sct.monitors[0].copy()
-            screenshot = sct.grab(root)
+            screenshot = _ss["screenshot"]
+            root = _ss["root"]
 
             rate = 60
             monitor = glfw.get_primary_monitor()
@@ -655,13 +677,19 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
 
             GL.glUniform1i(uniforms["tex"], 0)
 
+            # cache framebuffer size and cursor scale - updated via resize callback
+            # to avoid per-frame and per-cursor-move glfw calls
+            _fb_init = glfw.get_framebuffer_size(window)
+            _win_init = glfw.get_window_size(window)
+            _fb = [_fb_init[0], _fb_init[1]]
+            cursor_scale = [
+                (_fb_init[0] / _win_init[0]) if _win_init[0] else 1.0,
+                (_fb_init[1] / _win_init[1]) if _win_init[1] else 1.0,
+            ]
+
             # scale logical window coords to framebuffer pixels (handles hidpi)
             def window_to_framebuffer(x: float, y: float) -> Vec2:
-                win_w, win_h = glfw.get_window_size(window)
-                fb_w, fb_h = glfw.get_framebuffer_size(window)
-                sx = (fb_w / win_w) if win_w else 1.0
-                sy = (fb_h / win_h) if win_h else 1.0
-                return Vec2(x * sx, y * sy)
+                return Vec2(x * cursor_scale[0], y * cursor_scale[1])
 
             init_x, init_y = glfw.get_cursor_pos(window)
             init_pos = window_to_framebuffer(init_x, init_y)
@@ -824,12 +852,20 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
                 nonlocal quitting
                 quitting = True
 
+            def on_framebuffer_size(_win, w: int, h: int) -> None:
+                _fb[0] = w
+                _fb[1] = h
+                ww, wh = glfw.get_window_size(_win)
+                cursor_scale[0] = (w / ww) if ww else 1.0
+                cursor_scale[1] = (h / wh) if wh else 1.0
+
             # register callbacks
             glfw.set_cursor_pos_callback(window, on_cursor_pos)
             glfw.set_mouse_button_callback(window, on_mouse_button)
             glfw.set_scroll_callback(window, on_scroll)
             glfw.set_key_callback(window, on_key)
             glfw.set_window_close_callback(window, on_close)
+            glfw.set_framebuffer_size_callback(window, on_framebuffer_size)
 
             live_mode = os.environ.get("BOOMER_LIVE") == "1"
 
@@ -838,7 +874,7 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
                 if not windowed and fullscreen_monitor is None:
                     glfw.focus_window(window)
 
-                fb_w, fb_h = glfw.get_framebuffer_size(window)
+                fb_w, fb_h = _fb[0], _fb[1]
                 GL.glViewport(0, 0, fb_w, fb_h)
 
                 glfw.poll_events()
@@ -847,7 +883,7 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
                 update_flashlight(flashlight, dt)
 
                 GL.glClearColor(0.1, 0.1, 0.1, 1.0)
-                GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
 
                 # upload per-frame uniforms using pre-cached locations
                 GL.glUseProgram(shader_program)
@@ -863,7 +899,6 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
                 GL.glDrawElements(GL.GL_TRIANGLES, 6, GL.GL_UNSIGNED_INT, None)
 
                 glfw.swap_buffers(window)
-                GL.glFinish()
 
                 # reveal windowed-mode window after the first real frame is ready
                 if first_frame:
@@ -872,7 +907,9 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
 
                 if live_mode:
                     screenshot = sct.grab(root)
+                    GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
                     if screenshot.width != int(vertices[0]) or screenshot.height != int(vertices[6]):
+                        # dimensions changed - reallocate texture and update geometry
                         vertices = build_vertices(screenshot.width, screenshot.height, numpy)
                         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
                         GL.glBufferData(
@@ -881,8 +918,15 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
                             vertices,
                             GL.GL_STATIC_DRAW,
                         )
-                    GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
-                    upload_texture(GL, screenshot.width, screenshot.height, screenshot.bgra)
+                        upload_texture(GL, screenshot.width, screenshot.height, screenshot.bgra)
+                    else:
+                        # same size - glTexSubImage2D avoids reallocating texture storage
+                        GL.glTexSubImage2D(
+                            GL.GL_TEXTURE_2D, 0, 0, 0,
+                            screenshot.width, screenshot.height,
+                            GL.GL_BGRA, GL.GL_UNSIGNED_BYTE,
+                            screenshot.bgra,
+                        )
 
             GL.glDeleteTextures(1, [texture])
             GL.glDeleteVertexArrays(1, [vao])
