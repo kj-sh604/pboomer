@@ -1,0 +1,4 @@
+glfw>=2.7.0
+mss>=9.0.1
+numpy>=1.24.0
+PyOpenGL>=3.1.7
