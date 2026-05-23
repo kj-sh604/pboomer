@@ -330,12 +330,17 @@ class X11KeyMapper:
     def __init__(self) -> None:
         self._x11 = None
         self._display = None
+        self._root_window = 0
         try:
             x11 = ctypes.CDLL("libX11.so.6")
             x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
             x11.XOpenDisplay.restype = ctypes.c_void_p
             x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
             x11.XCloseDisplay.restype = ctypes.c_int
+            x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
+            x11.XDefaultScreen.restype = ctypes.c_int
+            x11.XRootWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            x11.XRootWindow.restype = ctypes.c_ulong
             x11.XkbKeycodeToKeysym.argtypes = [
                 ctypes.c_void_p,
                 ctypes.c_uint,
@@ -343,13 +348,42 @@ class X11KeyMapper:
                 ctypes.c_int,
             ]
             x11.XkbKeycodeToKeysym.restype = ctypes.c_ulong
+            x11.XQueryPointer.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_ulong,
+                ctypes.POINTER(ctypes.c_ulong),
+                ctypes.POINTER(ctypes.c_ulong),
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_uint),
+            ]
+            x11.XQueryPointer.restype = ctypes.c_int
+            x11.XWarpPointer.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_ulong,
+                ctypes.c_ulong,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint,
+                ctypes.c_uint,
+                ctypes.c_int,
+                ctypes.c_int,
+            ]
+            x11.XWarpPointer.restype = ctypes.c_int
+            x11.XFlush.argtypes = [ctypes.c_void_p]
+            x11.XFlush.restype = ctypes.c_int
 
             self._display = x11.XOpenDisplay(None)
             if self._display:
                 self._x11 = x11
+                screen = x11.XDefaultScreen(self._display)
+                self._root_window = int(x11.XRootWindow(self._display, screen))
         except Exception:
             self._x11 = None
             self._display = None
+            self._root_window = 0
 
     def keysym(self, scancode: int, shifted: bool) -> int | None:
         if self._x11 is None or self._display is None or scancode <= 0:
@@ -363,6 +397,51 @@ class X11KeyMapper:
         if keysym == 0:
             return None
         return keysym
+
+    def pointer_pos(self) -> tuple[int, int] | None:
+        if self._x11 is None or self._display is None or self._root_window == 0:
+            return None
+
+        root_return = ctypes.c_ulong()
+        child_return = ctypes.c_ulong()
+        root_x = ctypes.c_int()
+        root_y = ctypes.c_int()
+        win_x = ctypes.c_int()
+        win_y = ctypes.c_int()
+        mask_return = ctypes.c_uint()
+
+        if self._x11.XQueryPointer(
+            self._display,
+            self._root_window,
+            ctypes.byref(root_return),
+            ctypes.byref(child_return),
+            ctypes.byref(root_x),
+            ctypes.byref(root_y),
+            ctypes.byref(win_x),
+            ctypes.byref(win_y),
+            ctypes.byref(mask_return),
+        ) == 0:
+            return None
+
+        return int(root_x.value), int(root_y.value)
+
+    def warp_pointer(self, x: int, y: int) -> bool:
+        if self._x11 is None or self._display is None or self._root_window == 0:
+            return False
+
+        self._x11.XWarpPointer(
+            self._display,
+            0,
+            self._root_window,
+            0,
+            0,
+            0,
+            0,
+            int(x),
+            int(y),
+        )
+        self._x11.XFlush(self._display)
+        return True
 
     def close(self) -> None:
         if self._x11 is not None and self._display is not None:
@@ -531,6 +610,7 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
         with mss.MSS() as sct:
             screenshot = _ss["screenshot"]
             root = _ss["root"]
+            saved_pointer = key_mapper.pointer_pos()
 
             rate = 60
             monitor = glfw.get_primary_monitor()
@@ -558,6 +638,8 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
 
             window_width = int(screenshot.width)
             window_height = int(screenshot.height)
+            window_left = int(root.get("left", 0))
+            window_top = int(root.get("top", 0))
             if fullscreen_monitor is not None:
                 mode = glfw.get_video_mode(fullscreen_monitor)
                 if mode is not None:
@@ -572,6 +654,10 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
                     else:
                         window_width = int(getattr(mode, "width", window_width))
                         window_height = int(getattr(mode, "height", window_height))
+                if hasattr(glfw, "get_monitor_pos"):
+                    monitor_pos = glfw.get_monitor_pos(fullscreen_monitor)
+                    window_left = int(monitor_pos[0])
+                    window_top = int(monitor_pos[1])
 
             window = glfw.create_window(
                 window_width,
@@ -584,7 +670,7 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
                 raise SystemExit("Failed to create GLFW window")
 
             if windowed or fullscreen_monitor is None:
-                glfw.set_window_pos(window, int(root.get("left", 0)), int(root.get("top", 0)))
+                glfw.set_window_pos(window, window_left, window_top)
             glfw.make_context_current(window)
             glfw.swap_interval(0)
 
@@ -691,8 +777,14 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
             def window_to_framebuffer(x: float, y: float) -> Vec2:
                 return Vec2(x * cursor_scale[0], y * cursor_scale[1])
 
-            init_x, init_y = glfw.get_cursor_pos(window)
-            init_pos = window_to_framebuffer(init_x, init_y)
+            if saved_pointer is not None:
+                init_pos = Vec2(
+                    (saved_pointer[0] - window_left) * cursor_scale[0],
+                    (saved_pointer[1] - window_top) * cursor_scale[1],
+                )
+            else:
+                init_x, init_y = glfw.get_cursor_pos(window)
+                init_pos = window_to_framebuffer(init_x, init_y)
 
             # runtime state
             quitting = False
@@ -866,6 +958,8 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
             glfw.set_key_callback(window, on_key)
             glfw.set_window_close_callback(window, on_close)
             glfw.set_framebuffer_size_callback(window, on_framebuffer_size)
+            if saved_pointer is not None:
+                key_mapper.warp_pointer(saved_pointer[0], saved_pointer[1])
 
             live_mode = os.environ.get("BOOMER_LIVE") == "1"
 
