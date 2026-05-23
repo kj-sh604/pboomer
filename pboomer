@@ -372,6 +372,23 @@ class X11KeyMapper:
                 ctypes.c_int,
             ]
             x11.XWarpPointer.restype = ctypes.c_int
+            x11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            x11.XRaiseWindow.restype = ctypes.c_int
+            x11.XSetInputFocus.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_ulong,
+                ctypes.c_int,
+                ctypes.c_ulong,
+            ]
+            x11.XSetInputFocus.restype = ctypes.c_int
+            x11.XGetInputFocus.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_ulong),
+                ctypes.POINTER(ctypes.c_int),
+            ]
+            x11.XGetInputFocus.restype = ctypes.c_int
+            x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            x11.XSync.restype = ctypes.c_int
             x11.XFlush.argtypes = [ctypes.c_void_p]
             x11.XFlush.restype = ctypes.c_int
 
@@ -441,6 +458,30 @@ class X11KeyMapper:
             int(y),
         )
         self._x11.XFlush(self._display)
+        return True
+
+    def focused_window(self) -> int | None:
+        if self._x11 is None or self._display is None:
+            return None
+
+        focus_window = ctypes.c_ulong()
+        revert_to = ctypes.c_int()
+        self._x11.XGetInputFocus(
+            self._display,
+            ctypes.byref(focus_window),
+            ctypes.byref(revert_to),
+        )
+        if int(focus_window.value) == 0:
+            return None
+        return int(focus_window.value)
+
+    def promote_window(self, window_id: int) -> bool:
+        if self._x11 is None or self._display is None or window_id <= 0:
+            return False
+
+        self._x11.XRaiseWindow(self._display, int(window_id))
+        self._x11.XSetInputFocus(self._display, int(window_id), 1, 0)
+        self._x11.XSync(self._display, 0)
         return True
 
     def close(self) -> None:
@@ -624,6 +665,10 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
             # keep window hidden during setup to avoid a flash;
             # glfw ignores this hint for fullscreen windows, handled below instead
             glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+            if hasattr(glfw, "FOCUSED"):
+                glfw.window_hint(glfw.FOCUSED, glfw.TRUE)
+            if hasattr(glfw, "FOCUS_ON_SHOW"):
+                glfw.window_hint(glfw.FOCUS_ON_SHOW, glfw.TRUE)
 
             fullscreen_monitor = None
             if not windowed:
@@ -674,11 +719,30 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
             glfw.make_context_current(window)
             glfw.swap_interval(0)
 
+            x11_window = 0
+            if hasattr(glfw, "get_x11_window"):
+                try:
+                    x11_window = int(glfw.get_x11_window(window))
+                except Exception:
+                    x11_window = 0
+
+            if not windowed and hasattr(glfw, "set_window_attrib") and hasattr(glfw, "FLOATING"):
+                glfw.set_window_attrib(window, glfw.FLOATING, glfw.TRUE)
+
+            def raise_window() -> None:
+                if x11_window:
+                    key_mapper.promote_window(x11_window)
+                glfw.focus_window(window)
+                if hasattr(glfw, "request_window_attention"):
+                    glfw.request_window_attention(window)
+
             # immediately clear to black and swap so the fullscreen window covers
             # the desktop with black rather than grey/garbage during setup
             GL.glClearColor(0.0, 0.0, 0.0, 1.0)
             GL.glClear(GL.GL_COLOR_BUFFER_BIT)
             glfw.swap_buffers(window)
+            if fullscreen_monitor is not None:
+                raise_window()
 
             gl_version = GL.glGetString(GL.GL_VERSION)
             if gl_version is None:
@@ -789,13 +853,47 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
             # runtime state
             quitting = False
             fatal_error = None
-            first_frame = True
             active_keysyms: set[int] = set()
             camera = Camera(scale=1.0)
             mouse = Mouse(curr=init_pos, prev=init_pos.copy())
             flashlight = Flashlight(is_enabled=False, radius=200.0)
+            startup_focus_deadline = time.monotonic() + 15.0
+            next_focus_check = 0.0
 
             dt = 1.0 / float(max(1, rate))
+
+            def draw_frame(
+                camera_pos: Vec2,
+                camera_scale: float,
+                cursor_pos: Vec2,
+                fl_shadow: float,
+                fl_radius: float,
+            ) -> None:
+                fb_w, fb_h = _fb[0], _fb[1]
+                GL.glViewport(0, 0, fb_w, fb_h)
+                GL.glClearColor(0.1, 0.1, 0.1, 1.0)
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+
+                # upload per-frame uniforms using pre-cached locations
+                GL.glUseProgram(shader_program)
+                GL.glUniform2f(uniforms["cameraPos"], camera_pos.x, camera_pos.y)
+                GL.glUniform1f(uniforms["cameraScale"], camera_scale)
+                GL.glUniform2f(uniforms["screenshotSize"], float(screenshot.width), float(screenshot.height))
+                GL.glUniform2f(uniforms["windowSize"], float(fb_w), float(fb_h))
+                GL.glUniform2f(uniforms["cursorPos"], cursor_pos.x, cursor_pos.y)
+                GL.glUniform1f(uniforms["flShadow"], fl_shadow)
+                GL.glUniform1f(uniforms["flRadius"], fl_radius)
+
+                GL.glBindVertexArray(vao)
+                GL.glDrawElements(GL.GL_TRIANGLES, 6, GL.GL_UNSIGNED_INT, None)
+
+            # present the captured screen immediately so startup feels responsive
+            # before input callbacks and zoom state are fully initialized
+            draw_frame(camera.position, camera.scale, mouse.curr, flashlight.shadow, flashlight.radius)
+            glfw.swap_buffers(window)
+            if windowed or fullscreen_monitor is None:
+                glfw.show_window(window)
+            raise_window()
 
             def ctrl_pressed() -> bool:
                 if active_keysyms & CONTROL_KEYSYMS:
@@ -965,39 +1063,31 @@ def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
 
             # main render loop
             while not quitting and not glfw.window_should_close(window):
-                if not windowed and fullscreen_monitor is None:
-                    glfw.focus_window(window)
-
-                fb_w, fb_h = _fb[0], _fb[1]
-                GL.glViewport(0, 0, fb_w, fb_h)
+                now = time.monotonic()
+                if not windowed and now >= next_focus_check:
+                    next_focus_check = now + 0.1
+                    if x11_window:
+                        if key_mapper.focused_window() != x11_window:
+                            raise_window()
+                    elif now < startup_focus_deadline:
+                        raise_window()
+                elif not windowed and fullscreen_monitor is None:
+                    raise_window()
 
                 glfw.poll_events()
 
-                update_camera(camera, config, dt, mouse, Vec2(float(fb_w), float(fb_h)))
+                update_camera(camera, config, dt, mouse, Vec2(float(_fb[0]), float(_fb[1])))
                 update_flashlight(flashlight, dt)
 
-                GL.glClearColor(0.1, 0.1, 0.1, 1.0)
-                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-
-                # upload per-frame uniforms using pre-cached locations
-                GL.glUseProgram(shader_program)
-                GL.glUniform2f(uniforms["cameraPos"], camera.position.x, camera.position.y)
-                GL.glUniform1f(uniforms["cameraScale"], camera.scale)
-                GL.glUniform2f(uniforms["screenshotSize"], float(screenshot.width), float(screenshot.height))
-                GL.glUniform2f(uniforms["windowSize"], float(fb_w), float(fb_h))
-                GL.glUniform2f(uniforms["cursorPos"], mouse.curr.x, mouse.curr.y)
-                GL.glUniform1f(uniforms["flShadow"], flashlight.shadow)
-                GL.glUniform1f(uniforms["flRadius"], flashlight.radius)
-
-                GL.glBindVertexArray(vao)
-                GL.glDrawElements(GL.GL_TRIANGLES, 6, GL.GL_UNSIGNED_INT, None)
+                draw_frame(
+                    camera.position,
+                    camera.scale,
+                    mouse.curr,
+                    flashlight.shadow,
+                    flashlight.radius,
+                )
 
                 glfw.swap_buffers(window)
-
-                # reveal windowed-mode window after the first real frame is ready
-                if first_frame:
-                    glfw.show_window(window)
-                    first_frame = False
 
                 if live_mode:
                     screenshot = sct.grab(root)
