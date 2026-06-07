@@ -1,1180 +1,1317 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
-import dataclasses
-import ctypes
+from __future__ import annotations
+import ctypes as ct
+from ctypes import (
+    c_int, c_uint, c_ulong, c_long, c_short, c_char, c_char_p,
+    c_void_p, c_float, c_ubyte,
+    POINTER, byref, cast, CFUNCTYPE,
+)
 import math
 import os
-from pathlib import Path
-import subprocess
 import sys
 import time
 
+VERSION = "20260605"
 
-USAGE = """usage: boomer [OPTIONS]
+USAGE = """usage: pboomer [OPTIONS]
   -d, --delay <seconds: float>  delay execution of the program by provided <seconds>
   -h, --help                    show this help and exit
       --new-config [filepath]   generate a new default config at [filepath]
   -c, --config <filepath>       use config at <filepath>
   -V, --version                 show the current version and exit
-  -w, --windowed                windowed mode instead of fullscreen
+  -w, --windowed                windowed mode instead of fullscreen"""
 
-  Syntax for short flags: -h / -d:<value> / -d<value>"""
 
-INITIAL_FL_DELTA_RADIUS = 250.0
-FL_DELTA_RADIUS_DECELERATION = 10.0
-VELOCITY_THRESHOLD = 15.0
+# X11 / GL CONSTANTS
 
-# x11 keysym constants
-XK_ESCAPE = 0xFF1B
-XK_MINUS = 0x002D
-XK_EQUAL = 0x003D
-XK_0 = 0x0030
-XK_Q = 0x0051
-XK_q = 0x0071
-XK_R = 0x0052
-XK_r = 0x0072
-XK_F = 0x0046
-XK_f = 0x0066
-XK_KP_ADD = 0xFFAB
-XK_KP_SUBTRACT = 0xFFAD
-XK_CONTROL_L = 0xFFE3
-XK_CONTROL_R = 0xFFE4
-CONTROL_KEYSYMS = {XK_CONTROL_L, XK_CONTROL_R}
+# event types
+KeyPress       = 2
+KeyRelease     = 3
+ButtonPress    = 4
+ButtonRelease  = 5
+MotionNotify   = 6
+ClientMessage  = 33
 
-# shader sources
-VERTEX_SHADER = """#version 130
-in vec3 aPos;
-in vec2 aTexCoord;
-out vec2 texcoord;
+# event masks
+KeyPressMask        = 1 << 0
+KeyReleaseMask      = 1 << 1
+ButtonPressMask     = 1 << 2
+ButtonReleaseMask   = 1 << 3
+PointerMotionMask   = 1 << 6
+ExposureMask        = 1 << 15
+CWColormap          = 1 << 13
+CWEventMask         = 1 << 11
+CWOverrideRedirect  = 1 << 9
+CWSaveUnder         = 1 << 10
 
-uniform vec2 cameraPos;
-uniform float cameraScale;
-uniform vec2 windowSize;
-uniform vec2 screenshotSize;
+# x11 misc
+ZPixmap        = 2
+AllPlanes      = 0xFFFFFFFF
+RevertToParent = 2
+CurrentTime    = 0
+AllocNone      = 0
+InputOutput    = 1
+False_         = 0
+True_          = 1
 
+# glx attrs
+GLX_RGBA           = 4
+GLX_DEPTH_SIZE     = 12
+GLX_DOUBLEBUFFER   = 5
+
+# keysyms
+XK_Escape  = 0xFF1B
+XK_q       = 0x0071
+XK_r       = 0x0072
+XK_f       = 0x0066
+XK_m       = 0x006D
+XK_0       = 0x0030
+XK_equal   = 0x003D
+XK_minus   = 0x002D
+XK_ControlMask = 0x04
+XK_Button1     = 1
+XK_Button4     = 4
+XK_Button5     = 5
+
+# opengl constants
+GL_COLOR_BUFFER_BIT    = 0x00004000
+GL_DEPTH_BUFFER_BIT    = 0x00000100
+GL_TEXTURE_2D          = 0x0DE1
+GL_RGB                 = 0x1907
+GL_BGRA                = 0x80E1
+GL_UNSIGNED_BYTE       = 0x1401
+GL_NEAREST             = 0x2600
+GL_LINEAR              = 0x2601
+GL_CLAMP_TO_BORDER     = 0x812D
+GL_TEXTURE_MIN_FILTER  = 0x2801
+GL_TEXTURE_MAG_FILTER  = 0x2800
+GL_TEXTURE_WRAP_S      = 0x2802
+GL_TEXTURE_WRAP_T      = 0x2803
+GL_ARRAY_BUFFER        = 0x8892
+GL_ELEMENT_ARRAY_BUFFER = 0x8893
+GL_STATIC_DRAW         = 0x88E4
+GL_FLOAT               = 0x1406
+GL_VERTEX_SHADER       = 0x8B31
+GL_FRAGMENT_SHADER     = 0x8B30
+GL_COMPILE_STATUS      = 0x8B81
+GL_LINK_STATUS         = 0x8B82
+GL_TEXTURE0            = 0x84C0
+GL_TRIANGLES           = 0x0004
+GL_UNSIGNED_INT        = 0x1405
+
+
+# CTYPES STRUCT DEFINITIONS
+
+class XVisualInfo(ct.Structure):
+    _fields_ = [
+        ("visual",        c_void_p),
+        ("visualid",      c_ulong),
+        ("screen",        c_int),
+        ("depth",         c_int),
+        ("class",         c_int),
+        ("red_mask",      c_ulong),
+        ("green_mask",    c_ulong),
+        ("blue_mask",     c_ulong),
+        ("colormap_size", c_int),
+        ("bits_per_rgb",  c_int),
+    ]
+
+
+class XSetWindowAttributes(ct.Structure):
+    _fields_ = [
+        ("background_pixmap",      c_ulong),
+        ("background_pixel",       c_ulong),
+        ("border_pixmap",          c_ulong),
+        ("border_pixel",           c_ulong),
+        ("bit_gravity",            c_int),
+        ("win_gravity",            c_int),
+        ("backing_store",          c_int),
+        ("backing_planes",         c_ulong),
+        ("backing_pixel",          c_ulong),
+        ("save_under",             c_int),
+        ("event_mask",             c_long),
+        ("do_not_propagate_mask",  c_long),
+        ("override_redirect",      c_int),
+        ("colormap",               c_ulong),
+        ("cursor",                 c_ulong),
+    ]
+
+
+class XWindowAttributes(ct.Structure):
+    _fields_ = [
+        ("x",                     c_int),
+        ("y",                     c_int),
+        ("width",                 c_int),
+        ("height",                c_int),
+        ("border_width",          c_int),
+        ("depth",                 c_int),
+        ("visual",                c_void_p),
+        ("root",                  c_ulong),
+        ("class",                 c_int),
+        ("bit_gravity",           c_int),
+        ("win_gravity",           c_int),
+        ("backing_store",         c_int),
+        ("backing_planes",        c_ulong),
+        ("backing_pixel",         c_ulong),
+        ("save_under",            c_int),
+        ("colormap",              c_ulong),
+        ("map_installed",         c_int),
+        ("map_state",             c_int),
+        ("all_event_masks",       c_long),
+        ("your_event_mask",       c_long),
+        ("do_not_propagate_mask", c_long),
+        ("override_redirect",     c_int),
+        ("screen",                c_void_p),
+    ]
+
+
+class XImage(ct.Structure):
+    _fields_ = [
+        ("width",           c_int),
+        ("height",          c_int),
+        ("xoffset",         c_int),
+        ("format",          c_int),
+        ("data",            c_void_p),
+        ("byte_order",      c_int),
+        ("bitmap_unit",     c_int),
+        ("bitmap_bit_order", c_int),
+        ("bitmap_pad",      c_int),
+        ("depth",           c_int),
+        ("bytes_per_line",  c_int),
+        ("bits_per_pixel",  c_int),
+    ]
+
+
+class XClassHint(ct.Structure):
+    _fields_ = [
+        ("res_name",  c_char_p),
+        ("res_class", c_char_p),
+    ]
+
+
+class XKeyEvent(ct.Structure):
+    _fields_ = [
+        ("type",        c_int),
+        ("serial",      c_ulong),
+        ("send_event",  c_int),
+        ("display",     c_void_p),
+        ("window",      c_ulong),
+        ("root",        c_ulong),
+        ("subwindow",   c_ulong),
+        ("time",        c_ulong),
+        ("x",           c_int),
+        ("y",           c_int),
+        ("x_root",      c_int),
+        ("y_root",      c_int),
+        ("state",       c_uint),
+        ("keycode",     c_uint),
+        ("same_screen", c_int),
+    ]
+
+
+class XButtonEvent(ct.Structure):
+    _fields_ = [
+        ("type",        c_int),
+        ("serial",      c_ulong),
+        ("send_event",  c_int),
+        ("display",     c_void_p),
+        ("window",      c_ulong),
+        ("root",        c_ulong),
+        ("subwindow",   c_ulong),
+        ("time",        c_ulong),
+        ("x",           c_int),
+        ("y",           c_int),
+        ("x_root",      c_int),
+        ("y_root",      c_int),
+        ("state",       c_uint),
+        ("button",      c_uint),
+        ("same_screen", c_int),
+    ]
+
+
+class XMotionEvent(ct.Structure):
+    _fields_ = [
+        ("type",        c_int),
+        ("serial",      c_ulong),
+        ("send_event",  c_int),
+        ("display",     c_void_p),
+        ("window",      c_ulong),
+        ("root",        c_ulong),
+        ("subwindow",   c_ulong),
+        ("time",        c_ulong),
+        ("x",           c_int),
+        ("y",           c_int),
+        ("x_root",      c_int),
+        ("y_root",      c_int),
+        ("state",       c_uint),
+        ("is_hint",     c_char),
+        ("same_screen", c_int),
+    ]
+
+
+class _ClientData(ct.Union):
+    _fields_ = [
+        ("b", c_char * 20),
+        ("s", c_short * 10),
+        ("l", c_long * 5),
+    ]
+
+
+class XClientMessageEvent(ct.Structure):
+    _fields_ = [
+        ("type",         c_int),
+        ("serial",       c_ulong),
+        ("send_event",   c_int),
+        ("display",      c_void_p),
+        ("window",       c_ulong),
+        ("message_type", c_ulong),
+        ("format",       c_int),
+        ("data",         _ClientData),
+    ]
+
+
+class XErrorEvent(ct.Structure):
+    _fields_ = [
+        ("type",         c_int),
+        ("display",      c_void_p),
+        ("resourceid",   c_ulong),
+        ("serial",       c_ulong),
+        ("error_code",   c_ubyte),
+        ("request_code", c_ubyte),
+        ("minor_code",   c_ubyte),
+    ]
+
+
+class XEvent(ct.Union):
+    _fields_ = [
+        ("type",    c_int),
+        ("xkey",    XKeyEvent),
+        ("xbutton", XButtonEvent),
+        ("xmotion", XMotionEvent),
+        ("xclient", XClientMessageEvent),
+        ("_pad",    c_long * 24),
+    ]
+
+
+# SHARED LIBRARY LOADING
+
+_x11  = ct.CDLL("libX11.so.6")
+_xr   = ct.CDLL("libXrandr.so.2")
+_libgl = ct.CDLL("libGL.so.1")
+
+
+# X11 / XRANDR FUNCTION TYPING
+
+_x11.XOpenDisplay.argtypes       = [c_char_p]
+_x11.XOpenDisplay.restype        = c_void_p
+
+_x11.XCloseDisplay.argtypes      = [c_void_p]
+_x11.XCloseDisplay.restype       = c_int
+
+_x11.XDefaultRootWindow.argtypes = [c_void_p]
+_x11.XDefaultRootWindow.restype  = c_ulong
+
+_x11.XGetWindowAttributes.argtypes = [c_void_p, c_ulong, POINTER(XWindowAttributes)]
+_x11.XGetWindowAttributes.restype  = c_int
+
+_x11.XCreateColormap.argtypes    = [c_void_p, c_ulong, c_void_p, c_int]
+_x11.XCreateColormap.restype     = c_ulong
+
+_x11.XCreateWindow.argtypes = [
+    c_void_p, c_ulong, c_int, c_int,
+    c_uint, c_uint, c_uint, c_int,
+    c_uint, c_void_p, c_ulong,
+    POINTER(XSetWindowAttributes),
+]
+_x11.XCreateWindow.restype = c_ulong
+
+_x11.XMapWindow.argtypes         = [c_void_p, c_ulong]
+_x11.XMapWindow.restype          = c_int
+
+_x11.XDestroyWindow.argtypes     = [c_void_p, c_ulong]
+_x11.XDestroyWindow.restype      = c_int
+
+_x11.XStoreName.argtypes         = [c_void_p, c_ulong, c_char_p]
+_x11.XStoreName.restype          = c_int
+
+_x11.XSetClassHint.argtypes      = [c_void_p, c_ulong, POINTER(XClassHint)]
+_x11.XSetClassHint.restype       = c_int
+
+_x11.XInternAtom.argtypes        = [c_void_p, c_char_p, c_int]
+_x11.XInternAtom.restype         = c_ulong
+
+_x11.XSetWMProtocols.argtypes    = [c_void_p, c_ulong, POINTER(c_ulong), c_int]
+_x11.XSetWMProtocols.restype     = c_int
+
+_x11.XPending.argtypes           = [c_void_p]
+_x11.XPending.restype            = c_int
+
+_x11.XNextEvent.argtypes         = [c_void_p, POINTER(XEvent)]
+_x11.XNextEvent.restype          = c_int
+
+_x11.XQueryPointer.argtypes = [
+    c_void_p, c_ulong,
+    POINTER(c_ulong), POINTER(c_ulong),
+    POINTER(c_int), POINTER(c_int),
+    POINTER(c_int), POINTER(c_int),
+    POINTER(c_uint),
+]
+_x11.XQueryPointer.restype = c_int
+
+_x11.XGetInputFocus.argtypes = [c_void_p, POINTER(c_ulong), POINTER(c_int)]
+_x11.XGetInputFocus.restype  = c_int
+
+_x11.XSetInputFocus.argtypes = [c_void_p, c_ulong, c_int, c_ulong]
+_x11.XSetInputFocus.restype  = c_int
+
+_x11.XSync.argtypes              = [c_void_p, c_int]
+_x11.XSync.restype               = c_int
+
+_x11.XGetImage.argtypes = [
+    c_void_p, c_ulong, c_int, c_int,
+    c_uint, c_uint, c_ulong, c_int,
+]
+_x11.XGetImage.restype = POINTER(XImage)
+
+_x11.XDestroyImage.argtypes      = [POINTER(XImage)]
+_x11.XDestroyImage.restype       = c_int
+
+_x11.XLookupKeysym.argtypes      = [POINTER(XKeyEvent), c_int]
+_x11.XLookupKeysym.restype       = c_ulong
+
+_x11.XFree.argtypes              = [c_void_p]
+_x11.XFree.restype               = c_int
+
+_x11.XGetErrorText.argtypes = [c_void_p, c_int, c_char_p, c_int]
+_x11.XGetErrorText.restype  = c_int
+
+_xr.XRRGetScreenInfo.argtypes    = [c_void_p, c_ulong]
+_xr.XRRGetScreenInfo.restype     = c_void_p
+
+_xr.XRRConfigCurrentRate.argtypes = [c_void_p]
+_xr.XRRConfigCurrentRate.restype  = c_int
+
+_xr.XRRFreeScreenConfigInfo.argtypes = [c_void_p]
+_xr.XRRFreeScreenConfigInfo.restype  = None
+
+
+# GL / GLX FUNCTION TYPING
+
+_libgl.glXChooseVisual.argtypes  = [c_void_p, c_int, POINTER(c_int)]
+_libgl.glXChooseVisual.restype   = POINTER(XVisualInfo)
+
+_libgl.glXCreateContext.argtypes = [c_void_p, POINTER(XVisualInfo), c_void_p, c_int]
+_libgl.glXCreateContext.restype  = c_void_p
+
+_libgl.glXMakeCurrent.argtypes   = [c_void_p, c_ulong, c_void_p]
+_libgl.glXMakeCurrent.restype    = c_int
+
+_libgl.glXSwapBuffers.argtypes   = [c_void_p, c_ulong]
+_libgl.glXSwapBuffers.restype    = None
+
+_libgl.glXDestroyContext.argtypes = [c_void_p, c_void_p]
+_libgl.glXDestroyContext.restype  = None
+
+_libgl.glXQueryVersion.argtypes  = [c_void_p, POINTER(c_int), POINTER(c_int)]
+_libgl.glXQueryVersion.restype   = c_int
+
+# core GL 1.1
+_libgl.glClearColor.argtypes     = [c_float, c_float, c_float, c_float]
+_libgl.glClearColor.restype      = None
+
+_libgl.glClear.argtypes          = [c_uint]
+_libgl.glClear.restype           = None
+
+_libgl.glViewport.argtypes       = [c_int, c_int, c_int, c_int]
+_libgl.glViewport.restype        = None
+
+_libgl.glFinish.argtypes         = []
+_libgl.glFinish.restype          = None
+
+_libgl.glEnable.argtypes         = [c_uint]
+_libgl.glEnable.restype          = None
+
+_libgl.glGetString.argtypes      = [c_uint]
+_libgl.glGetString.restype       = c_char_p
+
+_libgl.glGenTextures.argtypes    = [c_int, POINTER(c_uint)]
+_libgl.glGenTextures.restype     = None
+
+_libgl.glActiveTexture.argtypes  = [c_uint]
+_libgl.glActiveTexture.restype   = None
+
+_libgl.glBindTexture.argtypes    = [c_uint, c_uint]
+_libgl.glBindTexture.restype     = None
+
+_libgl.glTexImage2D.argtypes = [
+    c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, c_void_p,
+]
+_libgl.glTexImage2D.restype = None
+
+_libgl.glGenerateMipmap.argtypes = [c_uint]
+_libgl.glGenerateMipmap.restype  = None
+
+_libgl.glTexParameteri.argtypes  = [c_uint, c_uint, c_int]
+_libgl.glTexParameteri.restype   = None
+
+_libgl.glDeleteTextures.argtypes = [c_int, POINTER(c_uint)]
+_libgl.glDeleteTextures.restype  = None
+
+# GL 2.0+ (should be in libGL.so on modern Mesa)
+_libgl.glCreateShader.argtypes   = [c_uint]
+_libgl.glCreateShader.restype    = c_uint
+
+_libgl.glShaderSource.argtypes   = [c_uint, c_int, POINTER(c_char_p), POINTER(c_int)]
+_libgl.glShaderSource.restype    = None
+
+_libgl.glCompileShader.argtypes  = [c_uint]
+_libgl.glCompileShader.restype   = None
+
+_libgl.glGetShaderiv.argtypes    = [c_uint, c_uint, POINTER(c_int)]
+_libgl.glGetShaderiv.restype     = None
+
+_libgl.glGetShaderInfoLog.argtypes = [c_uint, c_int, POINTER(c_int), c_char_p]
+_libgl.glGetShaderInfoLog.restype  = None
+
+_libgl.glDeleteShader.argtypes   = [c_uint]
+_libgl.glDeleteShader.restype    = None
+
+_libgl.glCreateProgram.argtypes  = []
+_libgl.glCreateProgram.restype   = c_uint
+
+_libgl.glAttachShader.argtypes   = [c_uint, c_uint]
+_libgl.glAttachShader.restype    = None
+
+_libgl.glLinkProgram.argtypes    = [c_uint]
+_libgl.glLinkProgram.restype     = None
+
+_libgl.glGetProgramiv.argtypes   = [c_uint, c_uint, POINTER(c_int)]
+_libgl.glGetProgramiv.restype    = None
+
+_libgl.glGetProgramInfoLog.argtypes = [c_uint, c_int, POINTER(c_int), c_char_p]
+_libgl.glGetProgramInfoLog.restype  = None
+
+_libgl.glDeleteProgram.argtypes  = [c_uint]
+_libgl.glDeleteProgram.restype   = None
+
+_libgl.glUseProgram.argtypes     = [c_uint]
+_libgl.glUseProgram.restype      = None
+
+_libgl.glGetUniformLocation.argtypes = [c_uint, c_char_p]
+_libgl.glGetUniformLocation.restype  = c_int
+
+_libgl.glUniform1i.argtypes      = [c_int, c_int]
+_libgl.glUniform1i.restype       = None
+
+_libgl.glUniform1f.argtypes      = [c_int, c_float]
+_libgl.glUniform1f.restype       = None
+
+_libgl.glUniform2f.argtypes      = [c_int, c_float, c_float]
+_libgl.glUniform2f.restype       = None
+
+_libgl.glGenVertexArrays.argtypes  = [c_int, POINTER(c_uint)]
+_libgl.glGenVertexArrays.restype   = None
+
+_libgl.glGenBuffers.argtypes     = [c_int, POINTER(c_uint)]
+_libgl.glGenBuffers.restype      = None
+
+_libgl.glBindVertexArray.argtypes = [c_uint]
+_libgl.glBindVertexArray.restype  = None
+
+_libgl.glBindBuffer.argtypes     = [c_uint, c_uint]
+_libgl.glBindBuffer.restype      = None
+
+_libgl.glBufferData.argtypes = [c_uint, c_long, c_void_p, c_uint]
+_libgl.glBufferData.restype  = None
+
+_libgl.glVertexAttribPointer.argtypes = [c_uint, c_int, c_uint, c_ubyte, c_int, c_void_p]
+_libgl.glVertexAttribPointer.restype  = None
+
+_libgl.glEnableVertexAttribArray.argtypes = [c_uint]
+_libgl.glEnableVertexAttribArray.restype  = None
+
+_libgl.glDrawElements.argtypes = [c_uint, c_int, c_uint, c_void_p]
+_libgl.glDrawElements.restype  = None
+
+_libgl.glDeleteVertexArrays.argtypes = [c_int, POINTER(c_uint)]
+_libgl.glDeleteVertexArrays.restype  = None
+
+_libgl.glDeleteBuffers.argtypes  = [c_int, POINTER(c_uint)]
+_libgl.glDeleteBuffers.restype   = None
+
+
+# X11 ERROR HANDLER
+
+_XErrorHandlerType = CFUNCTYPE(c_int, c_void_p, POINTER(XErrorEvent))
+
+@_XErrorHandlerType
+def _x11_error_handler(display, error_ev_ptr):
+    buf = ct.create_string_buffer(256)
+    ev = error_ev_ptr.contents
+    _x11.XGetErrorText(display, ev.error_code, buf, 256)
+    msg = buf.value.decode("utf-8", errors="replace")
+    print(f"error: x11: {msg}", file=sys.stderr)
+    return 0
+
+# keep a reference so the callback isnt garbage-collected
+_x11_error_handler_ref = _x11_error_handler
+
+
+# SHADER SOURCES
+
+_vertex_shader_source = b"""#version 130
+in vec3       aPos;
+in vec2       aTexCoord;
+out vec2      texcoord;
+uniform vec2  camera_pos;
+uniform float camera_scale;
+uniform vec2  window_size;
+uniform vec2  screenshot_size;
 vec3 to_world(vec3 v) {
     vec2 ratio = vec2(
-        windowSize.x / screenshotSize.x / cameraScale,
-        windowSize.y / screenshotSize.y / cameraScale);
-    return vec3((v.x / screenshotSize.x * 2.0 - 1.0) / ratio.x,
-                (v.y / screenshotSize.y * 2.0 - 1.0) / ratio.y,
+        window_size.x / screenshot_size.x / camera_scale,
+        window_size.y / screenshot_size.y / camera_scale);
+    return vec3((v.x / screenshot_size.x * 2.0 - 1.0) / ratio.x,
+                (v.y / screenshot_size.y * 2.0 - 1.0) / ratio.y,
                 v.z);
 }
-
-void main()
-{
-    gl_Position = vec4(to_world((aPos - vec3(cameraPos * vec2(1.0, -1.0), 0.0))), 1.0);
-    texcoord = aTexCoord;
+void main() {
+    gl_Position = vec4(to_world((aPos - vec3(camera_pos * vec2(1.0, -1.0), 0.0))), 1.0);
+    texcoord    = aTexCoord;
 }
 """
 
-FRAGMENT_SHADER = """#version 130
-out vec4 color;
-in vec2 texcoord;
+_fragment_shader_source = b"""#version 130
+out mediump vec4  color;
+in mediump vec2   texcoord;
 uniform sampler2D tex;
-uniform vec2 cursorPos;
-uniform vec2 windowSize;
-uniform float flShadow;
-uniform float flRadius;
-uniform float cameraScale;
-
-void main()
-{
-    vec4 cursor = vec4(cursorPos.x, windowSize.y - cursorPos.y, 0.0, 1.0);
-    color = mix(
-        texture(tex, texcoord), vec4(0.0, 0.0, 0.0, 0.0),
-        length(cursor - gl_FragCoord) < (flRadius * cameraScale) ? 0.0 : flShadow);
+uniform vec2      cursor_pos;
+uniform vec2      window_size;
+uniform float     fl_shadow;
+uniform float     fl_radius;
+uniform float     camera_scale;
+uniform float     fl_feather;
+uniform float     mirror;
+void main() {
+    vec4 cursor = vec4(cursor_pos.x, window_size.y - cursor_pos.y, 0.0, 1.0);
+    float dist = length(cursor - gl_FragCoord);
+    float radius_px = fl_radius * camera_scale;
+    float inner = radius_px * (1.0 - fl_feather);
+    float outer = radius_px;
+    float alpha = smoothstep(inner, outer, dist);
+    vec2 tc = texcoord;
+    if (mirror > 0.5) tc.x = 1.0 - tc.x;
+    color = mix(texture(tex, tc), vec4(0.0, 0.0, 0.0, 0.0), alpha * fl_shadow);
 }
 """
 
 
-class UsageError(Exception):
-    pass
+# CONFIG
 
-
-# config
-@dataclasses.dataclass
 class Config:
-    min_scale: float = 0.01
-    scroll_speed: float = 1.5
-    drag_friction: float = 6.0
-    scale_friction: float = 4.0
-
-    def __str__(self) -> str:
-        return (
-            "(min_scale: "
-            f"{self.min_scale}, "
-            "scroll_speed: "
-            f"{self.scroll_speed}, "
-            "drag_friction: "
-            f"{self.drag_friction}, "
-            "scale_friction: "
-            f"{self.scale_friction})"
-        )
-
-
-@dataclasses.dataclass
-class Vec2:
-    x: float
-    y: float
-
-    def copy(self) -> "Vec2":
-        return Vec2(self.x, self.y)
-
-    def __add__(self, other: "Vec2") -> "Vec2":
-        return Vec2(self.x + other.x, self.y + other.y)
-
-    def __sub__(self, other: "Vec2") -> "Vec2":
-        return Vec2(self.x - other.x, self.y - other.y)
-
-    def __mul__(self, value: float) -> "Vec2":
-        return Vec2(self.x * value, self.y * value)
-
-    def __truediv__(self, value: float) -> "Vec2":
-        return Vec2(self.x / value, self.y / value)
-
-    def length(self) -> float:
-        return math.sqrt(self.x * self.x + self.y * self.y)
-
-
-@dataclasses.dataclass
-class Mouse:
-    curr: Vec2
-    prev: Vec2
-    drag: bool = False
-
-
-@dataclasses.dataclass
-class Camera:
-    position: Vec2 = dataclasses.field(default_factory=lambda: Vec2(0.0, 0.0))
-    velocity: Vec2 = dataclasses.field(default_factory=lambda: Vec2(0.0, 0.0))
-    scale: float = 1.0
-    delta_scale: float = 0.0
-    scale_pivot: Vec2 = dataclasses.field(default_factory=lambda: Vec2(0.0, 0.0))
-
-
-@dataclasses.dataclass
-class Flashlight:
-    is_enabled: bool = False
-    shadow: float = 0.0
-    radius: float = 200.0
-    delta_radius: float = 0.0
-
-
-def get_config_dir() -> Path:
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    if xdg:
-        return Path(xdg)
-    return Path.home() / ".config"
-
-
-def default_config_path() -> Path:
-    return get_config_dir() / "boomer" / "config"
-
-
-def load_config(path: Path) -> Config:
-    result = Config()
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line[0] == "#":
-            continue
-        pair = line.split("=", 1)
-        if len(pair) < 2:
-            raise SystemExit(f"Invalid config line `{line}`")
-        key = pair[0].strip()
-        value = pair[1].strip()
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            raise SystemExit(f"Could not parse config value `{value}` for key `{key}`") from None
-        if key == "min_scale":
-            result.min_scale = parsed_value
-        elif key == "scroll_speed":
-            result.scroll_speed = parsed_value
-        elif key == "drag_friction":
-            result.drag_friction = parsed_value
-        elif key == "scale_friction":
-            result.scale_friction = parsed_value
-        else:
-            raise SystemExit(f"Unknown config key `{key}`")
-    return result
-
-
-def generate_default_config(path: Path) -> None:
-    with path.open("w", encoding="utf-8") as out:
-        out.write(f"min_scale = {Config.min_scale}\n")
-        out.write(f"scroll_speed = {Config.scroll_speed}\n")
-        out.write(f"drag_friction = {Config.drag_friction}\n")
-        out.write(f"scale_friction = {Config.scale_friction}\n")
-
-
-def boomer_version() -> str:
-    try:
-        revision = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
-        ).decode("utf-8", errors="replace").strip()
-    except Exception:
-        revision = "unknown"
-    if revision != "unknown":
-        revision = revision[:8]
-    return f"boomer-{revision}"
-
-
-@dataclasses.dataclass
-class CliOptions:
-    config_file: Path = dataclasses.field(default_factory=default_config_path)
-    delay_sec: float = 0.0
-    windowed: bool = False
-    action: str = "run"
-    new_config_path: Path | None = None
-
-
-def parse_delay(text: str) -> float:
-    try:
-        return float(text)
-    except ValueError:
-        raise SystemExit(f"Delay parameter `{text}` is not a valid number.") from None
-
-
-def parse_cli(argv: list[str]) -> CliOptions:
-    opts = CliOptions()
-    idx = 0
-    while idx < len(argv):
-        arg = argv[idx]
-
-        if arg in ("-h", "--help"):
-            opts.action = "help"
-            return opts
-
-        if arg in ("-V", "--version"):
-            opts.action = "version"
-            return opts
-
-        if arg in ("-w", "--windowed"):
-            opts.windowed = True
-            idx += 1
-            continue
-
-        if arg == "--new-config":
-            opts.action = "new-config"
-            if idx + 1 < len(argv) and not argv[idx + 1].startswith("-"):
-                opts.new_config_path = Path(argv[idx + 1]).expanduser()
-                idx += 2
-            else:
-                opts.new_config_path = opts.config_file
-                idx += 1
-            continue
-
-        if arg.startswith("--new-config="):
-            value = arg.split("=", 1)[1]
-            if not value:
-                raise UsageError("Unknown flag `new-config`")
-            opts.action = "new-config"
-            opts.new_config_path = Path(value).expanduser()
-            idx += 1
-            continue
-
-        if arg in ("-d", "--delay"):
-            if idx + 1 < len(argv):
-                opts.delay_sec = parse_delay(argv[idx + 1])
-                idx += 2
-            else:
-                opts.delay_sec = parse_delay("")
-                idx += 1
-            continue
-
-        if arg.startswith("--delay="):
-            opts.delay_sec = parse_delay(arg.split("=", 1)[1])
-            idx += 1
-            continue
-
-        if arg == "-c" or arg == "--config":
-            if idx + 1 >= len(argv):
-                raise UsageError("Unknown argument `config`")
-            opts.config_file = Path(argv[idx + 1]).expanduser()
-            idx += 2
-            continue
-
-        if arg.startswith("--config="):
-            opts.config_file = Path(arg.split("=", 1)[1]).expanduser()
-            idx += 1
-            continue
-
-        if arg == "-d" or arg.startswith("-d:") or (arg.startswith("-d") and len(arg) > 2):
-            compact = arg[2:]
-            if compact.startswith(":"):
-                compact = compact[1:]
-            if compact:
-                opts.delay_sec = parse_delay(compact)
-                idx += 1
-                continue
-
-        if arg == "-c" or (arg.startswith("-c") and len(arg) > 2):
-            compact = arg[2:]
-            if compact:
-                opts.config_file = Path(compact).expanduser()
-                idx += 1
-                continue
-
-        if arg.startswith("-"):
-            raise UsageError(f"Unknown flag `{arg.lstrip('-')}`")
-        raise UsageError(f"Unknown argument `{arg}`")
-
-    return opts
-
-
-# x11 key translation
-# falls back gracefully if libX11.so.6 is unavailable
-class X11KeyMapper:
-    def __init__(self) -> None:
-        self._x11 = None
-        self._display = None
-        self._root_window = 0
-        try:
-            x11 = ctypes.CDLL("libX11.so.6")
-            x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
-            x11.XOpenDisplay.restype = ctypes.c_void_p
-            x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
-            x11.XCloseDisplay.restype = ctypes.c_int
-            x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
-            x11.XDefaultScreen.restype = ctypes.c_int
-            x11.XRootWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
-            x11.XRootWindow.restype = ctypes.c_ulong
-            x11.XkbKeycodeToKeysym.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_uint,
-                ctypes.c_int,
-                ctypes.c_int,
-            ]
-            x11.XkbKeycodeToKeysym.restype = ctypes.c_ulong
-            x11.XQueryPointer.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_ulong,
-                ctypes.POINTER(ctypes.c_ulong),
-                ctypes.POINTER(ctypes.c_ulong),
-                ctypes.POINTER(ctypes.c_int),
-                ctypes.POINTER(ctypes.c_int),
-                ctypes.POINTER(ctypes.c_int),
-                ctypes.POINTER(ctypes.c_int),
-                ctypes.POINTER(ctypes.c_uint),
-            ]
-            x11.XQueryPointer.restype = ctypes.c_int
-            x11.XWarpPointer.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_ulong,
-                ctypes.c_ulong,
-                ctypes.c_int,
-                ctypes.c_int,
-                ctypes.c_uint,
-                ctypes.c_uint,
-                ctypes.c_int,
-                ctypes.c_int,
-            ]
-            x11.XWarpPointer.restype = ctypes.c_int
-            x11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-            x11.XRaiseWindow.restype = ctypes.c_int
-            x11.XSetInputFocus.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_ulong,
-                ctypes.c_int,
-                ctypes.c_ulong,
-            ]
-            x11.XSetInputFocus.restype = ctypes.c_int
-            x11.XGetInputFocus.argtypes = [
-                ctypes.c_void_p,
-                ctypes.POINTER(ctypes.c_ulong),
-                ctypes.POINTER(ctypes.c_int),
-            ]
-            x11.XGetInputFocus.restype = ctypes.c_int
-            x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
-            x11.XSync.restype = ctypes.c_int
-            x11.XFlush.argtypes = [ctypes.c_void_p]
-            x11.XFlush.restype = ctypes.c_int
-
-            self._display = x11.XOpenDisplay(None)
-            if self._display:
-                self._x11 = x11
-                screen = x11.XDefaultScreen(self._display)
-                self._root_window = int(x11.XRootWindow(self._display, screen))
-        except Exception:
-            self._x11 = None
-            self._display = None
-            self._root_window = 0
-
-    def keysym(self, scancode: int, shifted: bool) -> int | None:
-        if self._x11 is None or self._display is None or scancode <= 0:
-            return None
-
-        level = 1 if shifted else 0
-        keysym = int(self._x11.XkbKeycodeToKeysym(self._display, scancode, 0, level))
-        if keysym == 0 and level == 1:
-            keysym = int(self._x11.XkbKeycodeToKeysym(self._display, scancode, 0, 0))
-
-        if keysym == 0:
-            return None
-        return keysym
-
-    def pointer_pos(self) -> tuple[int, int] | None:
-        if self._x11 is None or self._display is None or self._root_window == 0:
-            return None
-
-        root_return = ctypes.c_ulong()
-        child_return = ctypes.c_ulong()
-        root_x = ctypes.c_int()
-        root_y = ctypes.c_int()
-        win_x = ctypes.c_int()
-        win_y = ctypes.c_int()
-        mask_return = ctypes.c_uint()
-
-        if self._x11.XQueryPointer(
-            self._display,
-            self._root_window,
-            ctypes.byref(root_return),
-            ctypes.byref(child_return),
-            ctypes.byref(root_x),
-            ctypes.byref(root_y),
-            ctypes.byref(win_x),
-            ctypes.byref(win_y),
-            ctypes.byref(mask_return),
-        ) == 0:
-            return None
-
-        return int(root_x.value), int(root_y.value)
-
-    def warp_pointer(self, x: int, y: int) -> bool:
-        if self._x11 is None or self._display is None or self._root_window == 0:
-            return False
-
-        self._x11.XWarpPointer(
-            self._display,
-            0,
-            self._root_window,
-            0,
-            0,
-            0,
-            0,
-            int(x),
-            int(y),
-        )
-        self._x11.XFlush(self._display)
-        return True
-
-    def focused_window(self) -> int | None:
-        if self._x11 is None or self._display is None:
-            return None
-
-        focus_window = ctypes.c_ulong()
-        revert_to = ctypes.c_int()
-        self._x11.XGetInputFocus(
-            self._display,
-            ctypes.byref(focus_window),
-            ctypes.byref(revert_to),
-        )
-        if int(focus_window.value) == 0:
-            return None
-        return int(focus_window.value)
-
-    def promote_window(self, window_id: int) -> bool:
-        if self._x11 is None or self._display is None or window_id <= 0:
-            return False
-
-        self._x11.XRaiseWindow(self._display, int(window_id))
-        self._x11.XSetInputFocus(self._display, int(window_id), 1, 0)
-        self._x11.XSync(self._display, 0)
-        return True
-
-    def close(self) -> None:
-        if self._x11 is not None and self._display is not None:
-            self._x11.XCloseDisplay(self._display)
-            self._display = None
-
-
-# camera and flashlight physics
-def world(camera: Camera, v: Vec2) -> Vec2:
-    return v / camera.scale
-
-
-def update_camera(camera: Camera, config: Config, dt: float, mouse: Mouse, window_size: Vec2) -> None:
-    if abs(camera.delta_scale) > 0.5:
-        p0 = (camera.scale_pivot - (window_size * 0.5)) / camera.scale
-        camera.scale = max(camera.scale + camera.delta_scale * dt, config.min_scale)
-        p1 = (camera.scale_pivot - (window_size * 0.5)) / camera.scale
-        camera.position = camera.position + (p0 - p1)
-        camera.delta_scale -= camera.delta_scale * dt * config.scale_friction
-
-    if not mouse.drag and camera.velocity.length() > VELOCITY_THRESHOLD:
-        camera.position = camera.position + (camera.velocity * dt)
-        camera.velocity = camera.velocity - (camera.velocity * dt * config.drag_friction)
-
-
-def update_flashlight(flashlight: Flashlight, dt: float) -> None:
-    if abs(flashlight.delta_radius) > 1.0:
-        flashlight.radius = max(0.0, flashlight.radius + flashlight.delta_radius * dt)
-        flashlight.delta_radius -= flashlight.delta_radius * FL_DELTA_RADIUS_DECELERATION * dt
-
-    if flashlight.is_enabled:
-        flashlight.shadow = min(flashlight.shadow + 6.0 * dt, 0.8)
-    else:
-        flashlight.shadow = max(flashlight.shadow - 6.0 * dt, 0.0)
-
-
-# opengl helpers
-def build_vertices(width: int, height: int, np_module):
-    w = float(width)
-    h = float(height)
-    return np_module.array(
-        [
-            w,
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-            w,
-            h,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            h,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-        ],
-        dtype=np_module.float32,
+    __slots__ = (
+        "min_scale", "scroll_speed", "drag_friction", "scale_friction",
+        "velocity_threshold", "scale_change_threshold",
+        "initial_radius", "initial_delta_radius", "radius_damping",
+        "fade_speed", "max_shadow_opacity", "radius_change_threshold",
+        "feather", "texture_filter",
+        "key_escape", "key_flashlight", "key_reset", "key_mirror",
+        "key_zoom_in", "key_zoom_out",
+        "modifier_flashlight", "button_drag", "button_zoom_in", "button_zoom_out",
+        "_keys",
     )
 
+    def __init__(self):
+        # camera
+        self.min_scale = 0.5
+        self.scroll_speed = 1.5
+        self.drag_friction = 6.0
+        self.scale_friction = 4.0
+        self.velocity_threshold = 15.0
+        self.scale_change_threshold = 0.5
+        # flashlight
+        self.initial_radius = 200.0
+        self.initial_delta_radius = 250.0
+        self.radius_damping = 10.0
+        self.fade_speed = 6.0
+        self.max_shadow_opacity = 0.8
+        self.radius_change_threshold = 1.0
+        self.feather = 0.0
+        # opengl
+        self.texture_filter = 0
+        # key bindings
+        self.key_escape = XK_Escape
+        self.key_flashlight = XK_f
+        self.key_reset = XK_0
+        self.key_mirror = XK_m
+        self.key_zoom_in = XK_equal
+        self.key_zoom_out = XK_minus
+        self.modifier_flashlight = XK_ControlMask
+        self.button_drag = XK_Button1
+        self.button_zoom_in = XK_Button4
+        self.button_zoom_out = XK_Button5
+        # parse map
+        self._keys = {
+            "min_scale": ("min_scale", float),
+            "scroll_speed": ("scroll_speed", float),
+            "drag_friction": ("drag_friction", float),
+            "scale_friction": ("scale_friction", float),
+            "velocity_threshold": ("velocity_threshold", float),
+            "scale_change_threshold": ("scale_change_threshold", float),
+            "initial_radius": ("initial_radius", float),
+            "initial_delta_radius": ("initial_delta_radius", float),
+            "radius_damping": ("radius_damping", float),
+            "fade_speed": ("fade_speed", float),
+            "max_shadow_opacity": ("max_shadow_opacity", float),
+            "radius_change_threshold": ("radius_change_threshold", float),
+            "feather": ("feather", float),
+            "texture_filter": ("texture_filter", int),
+        }
 
-def compile_shader(gl_module, source: str, shader_type: int, shader_name: str) -> int:
-    shader = gl_module.glCreateShader(shader_type)
-    gl_module.glShaderSource(shader, source)
-    gl_module.glCompileShader(shader)
-    success = gl_module.glGetShaderiv(shader, gl_module.GL_COMPILE_STATUS)
-    if not success:
-        log = gl_module.glGetShaderInfoLog(shader).decode("utf-8", errors="replace")
-        raise SystemExit(
-            "------------------------------\n"
-            f"Error during shader compilation: {shader_name}. Log:\n"
-            f"{log}\n"
-            "------------------------------"
-        )
+    def apply_value(self, key, val):
+        entry = self._keys.get(key)
+        if entry is None:
+            return
+        attr, typ = entry
+        try:
+            setattr(self, attr, typ(val))
+        except (ValueError, TypeError):
+            pass
+
+    def load_from_file(self, path):
+        try:
+            with open(path) as f:
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    if "=" not in stripped:
+                        continue
+                    k, _, v = stripped.partition("=")
+                    self.apply_value(k.strip(), v.strip())
+        except FileNotFoundError:
+            pass
+
+    @staticmethod
+    def write_default(path):
+        c = Config()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            f.write(f"min_scale = {c.min_scale:.1f}\n")
+            f.write(f"scroll_speed = {c.scroll_speed:.1f}\n")
+            f.write(f"drag_friction = {c.drag_friction:.1f}\n")
+            f.write(f"scale_friction = {c.scale_friction:.1f}\n")
+            f.write(f"velocity_threshold = {c.velocity_threshold:.1f}\n")
+            f.write(f"scale_change_threshold = {c.scale_change_threshold:.2f}\n")
+            f.write(f"initial_radius = {c.initial_radius:.1f}\n")
+            f.write(f"initial_delta_radius = {c.initial_delta_radius:.1f}\n")
+            f.write(f"radius_damping = {c.radius_damping:.1f}\n")
+            f.write(f"fade_speed = {c.fade_speed:.1f}\n")
+            f.write(f"max_shadow_opacity = {c.max_shadow_opacity:.2f}\n")
+            f.write(f"radius_change_threshold = {c.radius_change_threshold:.2f}\n")
+            f.write(f"feather = {c.feather:.2f}\n")
+            f.write(f"texture_filter = {c.texture_filter}\n")
+
+    @staticmethod
+    def default_config_path():
+        home = os.environ.get("HOME")
+        if not home:
+            return None
+        return os.path.join(home, ".config", "boomer", "config")
+
+
+# APPLICATION STATE
+
+class Camera:
+    __slots__ = ("position_x", "position_y", "velocity_x", "velocity_y",
+                 "scale", "delta_scale", "scale_pivot_x", "scale_pivot_y")
+    def __init__(self):
+        self.position_x = 0.0
+        self.position_y = 0.0
+        self.velocity_x = 0.0
+        self.velocity_y = 0.0
+        self.scale = 1.0
+        self.delta_scale = 0.0
+        self.scale_pivot_x = 0.0
+        self.scale_pivot_y = 0.0
+
+
+class Mouse:
+    __slots__ = ("curr_x", "curr_y", "prev_x", "prev_y", "drag")
+    def __init__(self):
+        self.curr_x = 0.0
+        self.curr_y = 0.0
+        self.prev_x = 0.0
+        self.prev_y = 0.0
+        self.drag = False
+
+
+class Flashlight:
+    __slots__ = ("enabled", "shadow", "radius", "delta_radius")
+    def __init__(self):
+        self.enabled = False
+        self.shadow = 0.0
+        self.radius = 0.0
+        self.delta_radius = 0.0
+
+
+class State:
+    __slots__ = ("camera", "mouse", "flashlight", "dt", "running", "mirror")
+    def __init__(self):
+        self.camera = Camera()
+        self.mouse = Mouse()
+        self.flashlight = Flashlight()
+        self.dt = 0.0
+        self.running = True
+        self.mirror = False
+
+
+class App:
+    __slots__ = ("config", "state", "config_path")
+
+    def __init__(self, config, config_path=None):
+        self.config = config
+        self.state = State()
+        self.config_path = config_path
+        self.state.flashlight.radius = config.initial_radius
+        if config_path:
+            config.load_from_file(config_path)
+
+    def camera_update(self, ww, wh):
+        cfg = self.config
+        cam = self.state.camera
+        dt = self.state.dt
+
+        if abs(cam.delta_scale) > cfg.scale_change_threshold:
+            half_w = ww * 0.5
+            half_h = wh * 0.5
+            sub_x = cam.scale_pivot_x - half_w
+            sub_y = cam.scale_pivot_y - half_h
+            p0_x = sub_x / cam.scale
+            p0_y = sub_y / cam.scale
+
+            cam.scale += cam.delta_scale * dt
+            if cam.scale < cfg.min_scale:
+                cam.scale = cfg.min_scale
+
+            p1_x = sub_x / cam.scale
+            p1_y = sub_y / cam.scale
+            cam.position_x += p0_x - p1_x
+            cam.position_y += p0_y - p1_y
+            cam.delta_scale -= cam.delta_scale * dt * cfg.scale_friction
+
+        m = self.state.mouse
+        if not m.drag:
+            vx = cam.velocity_x
+            vy = cam.velocity_y
+            vlen = math.sqrt(vx * vx + vy * vy)
+            if vlen > cfg.velocity_threshold:
+                cam.position_x += vx * dt
+                cam.position_y += vy * dt
+                cam.velocity_x -= vx * dt * cfg.drag_friction
+                cam.velocity_y -= vy * dt * cfg.drag_friction
+
+    def flashlight_update(self):
+        fl = self.state.flashlight
+        dt = self.state.dt
+        cfg = self.config
+
+        if fl.enabled:
+            fl.shadow = min(fl.shadow + cfg.fade_speed * dt, cfg.max_shadow_opacity)
+        else:
+            fl.shadow = max(fl.shadow - cfg.fade_speed * dt, 0.0)
+
+        if abs(fl.delta_radius) > cfg.radius_change_threshold:
+            fl.radius = max(0.0, fl.radius + fl.delta_radius * dt)
+            fl.delta_radius -= fl.delta_radius * cfg.radius_damping * dt
+
+    def _world_position(self, pos_x, pos_y, scale):
+        return pos_x / scale, pos_y / scale
+
+    def seed_mouse(self, wx, wy):
+        self.state.mouse.curr_x = float(wx)
+        self.state.mouse.curr_y = float(wy)
+        self.state.mouse.prev_x = float(wx)
+        self.state.mouse.prev_y = float(wy)
+
+    def _handle_keypress(self, keysym):
+        cfg = self.config
+        if keysym == cfg.key_escape or keysym == XK_q:
+            self.state.running = False
+        elif keysym == XK_r:
+            if self.config_path:
+                cfg.load_from_file(self.config_path)
+        elif keysym == cfg.key_flashlight:
+            self.state.flashlight.enabled = not self.state.flashlight.enabled
+        elif keysym == cfg.key_reset:
+            self.state.camera = Camera()
+            self.state.flashlight.shadow = 0.0
+            self.state.flashlight.radius = cfg.initial_radius
+            self.state.flashlight.delta_radius = 0.0
+        elif keysym == cfg.key_mirror:
+            self.state.mirror = not self.state.mirror
+        elif keysym == cfg.key_zoom_in:
+            self.state.camera.delta_scale += cfg.scroll_speed
+            self.state.camera.scale_pivot_x = self.state.mouse.curr_x
+            self.state.camera.scale_pivot_y = self.state.mouse.curr_y
+        elif keysym == cfg.key_zoom_out:
+            self.state.camera.delta_scale -= cfg.scroll_speed
+            self.state.camera.scale_pivot_x = self.state.mouse.curr_x
+            self.state.camera.scale_pivot_y = self.state.mouse.curr_y
+
+    def _handle_mousemove(self, motion_ptr, refresh_rate):
+        motion = motion_ptr.contents
+        m = self.state.mouse
+        m.curr_x = float(motion.x)
+        m.curr_y = float(motion.y)
+
+        if m.drag:
+            cam = self.state.camera
+            prev_x, prev_y = self._world_position(m.prev_x, m.prev_y, cam.scale)
+            cur_x, cur_y = self._world_position(m.curr_x, m.curr_y, cam.scale)
+            cam.position_x += prev_x - cur_x
+            cam.position_y += prev_y - cur_y
+            cam.velocity_x = (prev_x - cur_x) * refresh_rate
+            cam.velocity_y = (prev_y - cur_y) * refresh_rate
+
+        m.prev_x = m.curr_x
+        m.prev_y = m.curr_y
+
+    def _handle_buttonpress(self, button_ptr):
+        be = button_ptr.contents
+        cfg = self.config
+        ctrl_pressed = (be.state & cfg.modifier_flashlight) != 0
+
+        if be.button == cfg.button_drag:
+            m = self.state.mouse
+            m.prev_x = m.curr_x
+            m.prev_y = m.curr_y
+            m.drag = True
+            cam = self.state.camera
+            cam.velocity_x = 0.0
+            cam.velocity_y = 0.0
+        elif be.button == cfg.button_zoom_in:
+            if ctrl_pressed and self.state.flashlight.enabled:
+                self.state.flashlight.delta_radius += cfg.initial_delta_radius
+            else:
+                self.state.camera.delta_scale += cfg.scroll_speed
+                self.state.camera.scale_pivot_x = self.state.mouse.curr_x
+                self.state.camera.scale_pivot_y = self.state.mouse.curr_y
+        elif be.button == cfg.button_zoom_out:
+            if ctrl_pressed and self.state.flashlight.enabled:
+                self.state.flashlight.delta_radius -= cfg.initial_delta_radius
+            else:
+                self.state.camera.delta_scale -= cfg.scroll_speed
+                self.state.camera.scale_pivot_x = self.state.mouse.curr_x
+                self.state.camera.scale_pivot_y = self.state.mouse.curr_y
+
+    def _handle_buttonrelease(self, button_ptr):
+        be = button_ptr.contents
+        if be.button == self.config.button_drag:
+            self.state.mouse.drag = False
+
+
+# OPENGL HELPERS
+
+def _compile_shader(shader_type, source):
+    shader = _libgl.glCreateShader(shader_type)
+    src = ct.c_char_p(source)
+    srclen = c_int(len(source))
+    _libgl.glShaderSource(shader, 1, byref(src), byref(srclen))
+    _libgl.glCompileShader(shader)
+
+    success = c_int()
+    _libgl.glGetShaderiv(shader, GL_COMPILE_STATUS, byref(success))
+    if not success.value:
+        log = ct.create_string_buffer(512)
+        _libgl.glGetShaderInfoLog(shader, 512, None, log)
+        print(f"error: shader compile: {log.value.decode(errors='replace')}", file=sys.stderr)
     return shader
 
 
-def create_shader_program(gl_module, vertex_source: str, fragment_source: str) -> int:
-    vertex = compile_shader(gl_module, vertex_source, gl_module.GL_VERTEX_SHADER, "vert.glsl")
-    fragment = compile_shader(
-        gl_module, fragment_source, gl_module.GL_FRAGMENT_SHADER, "frag.glsl"
+def _build_program():
+    v = _compile_shader(GL_VERTEX_SHADER, _vertex_shader_source)
+    f = _compile_shader(GL_FRAGMENT_SHADER, _fragment_shader_source)
+
+    prog = _libgl.glCreateProgram()
+    _libgl.glAttachShader(prog, v)
+    _libgl.glAttachShader(prog, f)
+    _libgl.glLinkProgram(prog)
+
+    success = c_int()
+    _libgl.glGetProgramiv(prog, GL_LINK_STATUS, byref(success))
+    if not success.value:
+        log = ct.create_string_buffer(512)
+        _libgl.glGetProgramInfoLog(prog, 512, None, log)
+        print(f"error: program link: {log.value.decode(errors='replace')}", file=sys.stderr)
+
+    _libgl.glDeleteShader(v)
+    _libgl.glDeleteShader(f)
+    _libgl.glUseProgram(prog)
+    _libgl.glUniform1i(_libgl.glGetUniformLocation(prog, b"tex"), 0)
+
+    # cache uniform locations
+    locs = {
+        "camera_pos":      _libgl.glGetUniformLocation(prog, b"camera_pos"),
+        "camera_scale":    _libgl.glGetUniformLocation(prog, b"camera_scale"),
+        "window_size":     _libgl.glGetUniformLocation(prog, b"window_size"),
+        "screenshot_size": _libgl.glGetUniformLocation(prog, b"screenshot_size"),
+        "cursor_pos":      _libgl.glGetUniformLocation(prog, b"cursor_pos"),
+        "fl_shadow":       _libgl.glGetUniformLocation(prog, b"fl_shadow"),
+        "fl_radius":       _libgl.glGetUniformLocation(prog, b"fl_radius"),
+        "fl_feather":      _libgl.glGetUniformLocation(prog, b"fl_feather"),
+        "mirror":          _libgl.glGetUniformLocation(prog, b"mirror"),
+    }
+    return prog, locs
+
+
+def _create_texture(img, texture_filter):
+    tex = c_uint()
+    _libgl.glGenTextures(1, byref(tex))
+    _libgl.glActiveTexture(GL_TEXTURE0)
+    _libgl.glBindTexture(GL_TEXTURE_2D, tex)
+    _libgl.glTexImage2D(
+        GL_TEXTURE_2D, 0, GL_RGB,
+        img.width, img.height, 0,
+        GL_BGRA, GL_UNSIGNED_BYTE, img.data,
     )
-
-    program = gl_module.glCreateProgram()
-    gl_module.glAttachShader(program, vertex)
-    gl_module.glAttachShader(program, fragment)
-    gl_module.glBindAttribLocation(program, 0, b"aPos")
-    gl_module.glBindAttribLocation(program, 1, b"aTexCoord")
-    gl_module.glLinkProgram(program)
-
-    gl_module.glDeleteShader(vertex)
-    gl_module.glDeleteShader(fragment)
-
-    success = gl_module.glGetProgramiv(program, gl_module.GL_LINK_STATUS)
-    if not success:
-        log = gl_module.glGetProgramInfoLog(program).decode("utf-8", errors="replace")
-        raise SystemExit(log)
-
-    gl_module.glUseProgram(program)
-    return program
-
-
-def upload_texture(gl_module, width: int, height: int, bgra_data: bytes) -> None:
-    gl_module.glTexImage2D(
-        gl_module.GL_TEXTURE_2D,
-        0,
-        gl_module.GL_RGBA8,
-        width,
-        height,
-        0,
-        gl_module.GL_BGRA,
-        gl_module.GL_UNSIGNED_BYTE,
-        bgra_data,
-    )
-
-
-# main entrypoint - gl imports are deferred so --help/--version don't require them
-def run_boomer(config_file: Path, config: Config, windowed: bool) -> None:
-    import threading
-
-    # capture screenshot in a background thread while heavy GL imports load -
-    # this overlaps the two largest startup costs to reduce time-to-interactive
-    _ss: dict = {"screenshot": None, "root": None, "error": None}
-
-    def _capture() -> None:
-        try:
-            import mss as _m  # type: ignore
-            with _m.MSS() as s:
-                if not s.monitors:
-                    _ss["error"] = SystemExit("No monitors found")
-                    return
-                _ss["root"] = s.monitors[0].copy()
-                _ss["screenshot"] = s.grab(_ss["root"])
-        except Exception as exc:
-            _ss["error"] = exc
-
-    _ss_thread = threading.Thread(target=_capture, daemon=True)
-    _ss_thread.start()
-
-    try:
-        import glfw  # type: ignore
-        import numpy  # type: ignore
-        from OpenGL import GL  # type: ignore
-        import mss  # type: ignore
-    except Exception as exc:
-        raise SystemExit(
-            "Missing runtime dependencies. Install with `pip install -r requirements.txt`."
-        ) from exc
-
-    _ss_thread.join()
-    if _ss["error"] is not None:
-        raise _ss["error"]
-
-    if not glfw.init():
-        raise SystemExit("Failed to initialize GLFW")
-
-    window = None
-    key_mapper = X11KeyMapper()
-    try:
-        with mss.MSS() as sct:
-            screenshot = _ss["screenshot"]
-            root = _ss["root"]
-            saved_pointer = key_mapper.pointer_pos()
-
-            rate = 60
-            monitor = glfw.get_primary_monitor()
-            if monitor is not None:
-                mode = glfw.get_video_mode(monitor)
-                if mode is not None and getattr(mode, "refresh_rate", 0):
-                    rate = int(mode.refresh_rate)
-            print(f"Screen rate: {rate}")
-
-            glfw.default_window_hints()
-            # keep window hidden during setup to avoid a flash;
-            # glfw ignores this hint for fullscreen windows, handled below instead
-            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
-            if hasattr(glfw, "FOCUSED"):
-                glfw.window_hint(glfw.FOCUSED, glfw.TRUE)
-            if hasattr(glfw, "FOCUS_ON_SHOW"):
-                glfw.window_hint(glfw.FOCUS_ON_SHOW, glfw.TRUE)
-
-            fullscreen_monitor = None
-            if not windowed:
-                fullscreen_monitor = glfw.get_primary_monitor()
-
-            if not windowed and fullscreen_monitor is None:
-                glfw.window_hint(glfw.DECORATED, glfw.FALSE)
-                glfw.window_hint(glfw.FLOATING, glfw.TRUE)
-
-            if not windowed and fullscreen_monitor is not None:
-                glfw.window_hint(glfw.AUTO_ICONIFY, glfw.FALSE)
-
-            window_width = int(screenshot.width)
-            window_height = int(screenshot.height)
-            window_left = int(root.get("left", 0))
-            window_top = int(root.get("top", 0))
-            if fullscreen_monitor is not None:
-                mode = glfw.get_video_mode(fullscreen_monitor)
-                if mode is not None:
-                    if hasattr(mode, "size"):
-                        size = mode.size
-                        if hasattr(size, "width") and hasattr(size, "height"):
-                            window_width = int(size.width)
-                            window_height = int(size.height)
-                        elif isinstance(size, (tuple, list)) and len(size) >= 2:
-                            window_width = int(size[0])
-                            window_height = int(size[1])
-                    else:
-                        window_width = int(getattr(mode, "width", window_width))
-                        window_height = int(getattr(mode, "height", window_height))
-                if hasattr(glfw, "get_monitor_pos"):
-                    monitor_pos = glfw.get_monitor_pos(fullscreen_monitor)
-                    window_left = int(monitor_pos[0])
-                    window_top = int(monitor_pos[1])
-
-            window = glfw.create_window(
-                window_width,
-                window_height,
-                "boomer",
-                fullscreen_monitor,
-                None,
-            )
-            if window is None:
-                raise SystemExit("Failed to create GLFW window")
-
-            if windowed or fullscreen_monitor is None:
-                glfw.set_window_pos(window, window_left, window_top)
-            glfw.make_context_current(window)
-            glfw.swap_interval(0)
-
-            x11_window = 0
-            if hasattr(glfw, "get_x11_window"):
-                try:
-                    x11_window = int(glfw.get_x11_window(window))
-                except Exception:
-                    x11_window = 0
-
-            if not windowed and hasattr(glfw, "set_window_attrib") and hasattr(glfw, "FLOATING"):
-                glfw.set_window_attrib(window, glfw.FLOATING, glfw.TRUE)
-
-            def raise_window() -> None:
-                if x11_window:
-                    key_mapper.promote_window(x11_window)
-                glfw.focus_window(window)
-                if hasattr(glfw, "request_window_attention"):
-                    glfw.request_window_attention(window)
-
-            # immediately clear to black and swap so the fullscreen window covers
-            # the desktop with black rather than grey/garbage during setup
-            GL.glClearColor(0.0, 0.0, 0.0, 1.0)
-            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-            glfw.swap_buffers(window)
-            if fullscreen_monitor is not None:
-                raise_window()
-
-            gl_version = GL.glGetString(GL.GL_VERSION)
-            if gl_version is None:
-                print("GL version unknown")
-            else:
-                print("GL version", gl_version.decode("utf-8", errors="replace"))
-
-            developer_mode = os.environ.get("BOOMER_DEVELOPER") == "1"
-            shader_dir = Path.cwd() / "src"
-
-            def load_shader_sources() -> tuple[str, str]:
-                if not developer_mode:
-                    return VERTEX_SHADER, FRAGMENT_SHADER
-
-                vertex_path = shader_dir / "vert.glsl"
-                fragment_path = shader_dir / "frag.glsl"
-                if not vertex_path.exists() or not fragment_path.exists():
-                    raise SystemExit(
-                        "Developer mode expects shader files at ./src/vert.glsl and ./src/frag.glsl"
-                    )
-
-                return (
-                    vertex_path.read_text(encoding="utf-8"),
-                    fragment_path.read_text(encoding="utf-8"),
-                )
-
-            vert_source, frag_source = load_shader_sources()
-            shader_program = create_shader_program(GL, vert_source, frag_source)
-
-            # cache uniform locations once after linking, glGetUniformLocation
-            # is slow and must not be called every frame
-            def cache_uniforms(prog: int) -> dict:
-                names = [
-                    "cameraPos", "cameraScale", "screenshotSize", "windowSize",
-                    "cursorPos", "flShadow", "flRadius", "tex",
-                ]
-                return {n: GL.glGetUniformLocation(prog, n) for n in names}
-
-            uniforms = cache_uniforms(shader_program)
-
-            # geometry
-            vao = GL.glGenVertexArrays(1)
-            vbo = GL.glGenBuffers(1)
-            ebo = GL.glGenBuffers(1)
-
-            vertices = build_vertices(screenshot.width, screenshot.height, numpy)
-            indices = numpy.array([0, 1, 3, 1, 2, 3], dtype=numpy.uint32)
-
-            GL.glBindVertexArray(vao)
-
-            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
-            GL.glBufferData(GL.GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL.GL_STATIC_DRAW)
-
-            GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ebo)
-            GL.glBufferData(
-                GL.GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL.GL_STATIC_DRAW
-            )
-
-            stride = 5 * vertices.itemsize
-            GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, stride, None)
-            GL.glEnableVertexAttribArray(0)
-            GL.glVertexAttribPointer(
-                1,
-                2,
-                GL.GL_FLOAT,
-                GL.GL_FALSE,
-                stride,
-                ctypes.c_void_p(3 * vertices.itemsize),
-            )
-            GL.glEnableVertexAttribArray(1)
-
-            # screenshot texture
-            texture = GL.glGenTextures(1)
-            GL.glActiveTexture(GL.GL_TEXTURE0)
-            GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_BORDER)
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_BORDER)
-            upload_texture(GL, screenshot.width, screenshot.height, screenshot.bgra)
-            # no glGenerateMipmap
-
-            GL.glUniform1i(uniforms["tex"], 0)
-
-            # cache framebuffer size and cursor scale - updated via resize callback
-            # to avoid per-frame and per-cursor-move glfw calls
-            _fb_init = glfw.get_framebuffer_size(window)
-            _win_init = glfw.get_window_size(window)
-            _fb = [_fb_init[0], _fb_init[1]]
-            cursor_scale = [
-                (_fb_init[0] / _win_init[0]) if _win_init[0] else 1.0,
-                (_fb_init[1] / _win_init[1]) if _win_init[1] else 1.0,
-            ]
-
-            # scale logical window coords to framebuffer pixels (handles hidpi)
-            def window_to_framebuffer(x: float, y: float) -> Vec2:
-                return Vec2(x * cursor_scale[0], y * cursor_scale[1])
-
-            if saved_pointer is not None:
-                init_pos = Vec2(
-                    (saved_pointer[0] - window_left) * cursor_scale[0],
-                    (saved_pointer[1] - window_top) * cursor_scale[1],
-                )
-            else:
-                init_x, init_y = glfw.get_cursor_pos(window)
-                init_pos = window_to_framebuffer(init_x, init_y)
-
-            # runtime state
-            quitting = False
-            fatal_error = None
-            active_keysyms: set[int] = set()
-            camera = Camera(scale=1.0)
-            mouse = Mouse(curr=init_pos, prev=init_pos.copy())
-            flashlight = Flashlight(is_enabled=False, radius=200.0)
-            startup_focus_deadline = time.monotonic() + 15.0
-            next_focus_check = 0.0
-
-            dt = 1.0 / float(max(1, rate))
-
-            def draw_frame(
-                camera_pos: Vec2,
-                camera_scale: float,
-                cursor_pos: Vec2,
-                fl_shadow: float,
-                fl_radius: float,
-            ) -> None:
-                fb_w, fb_h = _fb[0], _fb[1]
-                GL.glViewport(0, 0, fb_w, fb_h)
-                GL.glClearColor(0.1, 0.1, 0.1, 1.0)
-                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-
-                # upload per-frame uniforms using pre-cached locations
-                GL.glUseProgram(shader_program)
-                GL.glUniform2f(uniforms["cameraPos"], camera_pos.x, camera_pos.y)
-                GL.glUniform1f(uniforms["cameraScale"], camera_scale)
-                GL.glUniform2f(uniforms["screenshotSize"], float(screenshot.width), float(screenshot.height))
-                GL.glUniform2f(uniforms["windowSize"], float(fb_w), float(fb_h))
-                GL.glUniform2f(uniforms["cursorPos"], cursor_pos.x, cursor_pos.y)
-                GL.glUniform1f(uniforms["flShadow"], fl_shadow)
-                GL.glUniform1f(uniforms["flRadius"], fl_radius)
-
-                GL.glBindVertexArray(vao)
-                GL.glDrawElements(GL.GL_TRIANGLES, 6, GL.GL_UNSIGNED_INT, None)
-
-            # present the captured screen immediately so startup feels responsive
-            # before input callbacks and zoom state are fully initialized
-            draw_frame(camera.position, camera.scale, mouse.curr, flashlight.shadow, flashlight.radius)
-            glfw.swap_buffers(window)
-            if windowed or fullscreen_monitor is None:
-                glfw.show_window(window)
-            raise_window()
-
-            def ctrl_pressed() -> bool:
-                if active_keysyms & CONTROL_KEYSYMS:
-                    return True
-                return (
-                    glfw.get_key(window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS
-                    or glfw.get_key(window, glfw.KEY_RIGHT_CONTROL) == glfw.PRESS
-                )
-
-            def scroll_up(amount: float = 1.0) -> None:
-                if ctrl_pressed() and flashlight.is_enabled:
-                    flashlight.delta_radius += INITIAL_FL_DELTA_RADIUS * amount
-                else:
-                    camera.delta_scale += config.scroll_speed * amount
-                    camera.scale_pivot = mouse.curr.copy()
-
-            def scroll_down(amount: float = 1.0) -> None:
-                if ctrl_pressed() and flashlight.is_enabled:
-                    flashlight.delta_radius -= INITIAL_FL_DELTA_RADIUS * amount
-                else:
-                    camera.delta_scale -= config.scroll_speed * amount
-                    camera.scale_pivot = mouse.curr.copy()
-
-            # input handlers
-            def handle_key(key: int, keysym: int | None) -> None:
-                nonlocal quitting, config, fatal_error, shader_program, uniforms
-
-                if keysym is not None:
-                    if keysym in (XK_EQUAL, XK_KP_ADD):
-                        scroll_up()
-                    elif keysym in (XK_MINUS, XK_KP_SUBTRACT):
-                        scroll_down()
-                    elif keysym == XK_0:
-                        camera.scale = 1.0
-                        camera.delta_scale = 0.0
-                        camera.position = Vec2(0.0, 0.0)
-                        camera.velocity = Vec2(0.0, 0.0)
-                    elif keysym in (XK_q, XK_Q, XK_ESCAPE):
-                        quitting = True
-                        glfw.set_window_should_close(window, True)
-                    elif keysym in (XK_r, XK_R):
-                        if str(config_file) and config_file.exists():
-                            try:
-                                config = load_config(config_file)
-                            except BaseException as exc:  # noqa: BLE001
-                                fatal_error = exc
-                                quitting = True
-
-                        if ctrl_pressed() and developer_mode:
-                            print("------------------------------")
-                            print("RELOADING SHADERS")
-                            try:
-                                vert_source, frag_source = load_shader_sources()
-                                new_shader_program = create_shader_program(
-                                    GL, vert_source, frag_source
-                                )
-                                GL.glDeleteProgram(shader_program)
-                                shader_program = new_shader_program
-                                uniforms = cache_uniforms(shader_program)
-                                GL.glUniform1i(uniforms["tex"], 0)
-                                print(f"Shader program ID: {shader_program}")
-                            except BaseException:  # noqa: BLE001
-                                print("Could not reload the shaders")
-                            print("------------------------------")
-                    elif keysym in (XK_f, XK_F):
-                        flashlight.is_enabled = not flashlight.is_enabled
-                    return
-
-                if key in (glfw.KEY_EQUAL, glfw.KEY_KP_ADD):
-                    scroll_up(1.0)
-                elif key in (glfw.KEY_MINUS, glfw.KEY_KP_SUBTRACT):
-                    scroll_down(1.0)
-                elif key == glfw.KEY_0:
-                    camera.scale = 1.0
-                    camera.delta_scale = 0.0
-                    camera.position = Vec2(0.0, 0.0)
-                    camera.velocity = Vec2(0.0, 0.0)
-                elif key in (glfw.KEY_Q, glfw.KEY_ESCAPE):
-                    quitting = True
-                    glfw.set_window_should_close(window, True)
-                elif key == glfw.KEY_R:
-                    if str(config_file) and config_file.exists():
-                        try:
-                            config = load_config(config_file)
-                        except BaseException as exc:  # noqa: BLE001
-                            fatal_error = exc
-                            quitting = True
-
-                    if ctrl_pressed() and developer_mode:
-                        print("------------------------------")
-                        print("RELOADING SHADERS")
-                        try:
-                            vert_source, frag_source = load_shader_sources()
-                            new_shader_program = create_shader_program(
-                                GL, vert_source, frag_source
-                            )
-                            GL.glDeleteProgram(shader_program)
-                            shader_program = new_shader_program
-                            uniforms = cache_uniforms(shader_program)
-                            GL.glUniform1i(uniforms["tex"], 0)
-                            print(f"Shader program ID: {shader_program}")
-                        except BaseException:  # noqa: BLE001
-                            print("Could not reload the shaders")
-                        print("------------------------------")
-                elif key == glfw.KEY_F:
-                    flashlight.is_enabled = not flashlight.is_enabled
-
-            def on_cursor_pos(_window, xpos: float, ypos: float) -> None:
-                pos = window_to_framebuffer(xpos, ypos)
-                mouse.curr = pos
-                if mouse.drag:
-                    delta = world(camera, mouse.prev) - world(camera, mouse.curr)
-                    camera.position = camera.position + delta
-                    camera.velocity = delta * float(rate)
-                mouse.prev = mouse.curr.copy()
-
-            def on_mouse_button(_window, button: int, action: int, _mods: int) -> None:
-                if button != glfw.MOUSE_BUTTON_LEFT:
-                    return
-                if action == glfw.PRESS:
-                    mouse.prev = mouse.curr.copy()
-                    mouse.drag = True
-                    camera.velocity = Vec2(0.0, 0.0)
-                elif action == glfw.RELEASE:
-                    mouse.drag = False
-
-            def on_scroll(_window, _xoffset: float, yoffset: float) -> None:
-                if yoffset > 0:
-                    scroll_up(abs(float(yoffset)))
-                elif yoffset < 0:
-                    scroll_down(abs(float(yoffset)))
-
-            def on_key(_window, key: int, scancode: int, action: int, mods: int) -> None:
-                keysym = key_mapper.keysym(scancode, shifted=bool(mods & glfw.MOD_SHIFT))
-
-                if keysym is not None:
-                    if action in (glfw.PRESS, glfw.REPEAT):
-                        active_keysyms.add(keysym)
-                    elif action == glfw.RELEASE:
-                        active_keysyms.discard(keysym)
-
-                if action == glfw.PRESS:
-                    handle_key(key, keysym)
-
-            def on_close(_window) -> None:
-                nonlocal quitting
-                quitting = True
-
-            def on_framebuffer_size(_win, w: int, h: int) -> None:
-                _fb[0] = w
-                _fb[1] = h
-                ww, wh = glfw.get_window_size(_win)
-                cursor_scale[0] = (w / ww) if ww else 1.0
-                cursor_scale[1] = (h / wh) if wh else 1.0
-
-            # register callbacks
-            glfw.set_cursor_pos_callback(window, on_cursor_pos)
-            glfw.set_mouse_button_callback(window, on_mouse_button)
-            glfw.set_scroll_callback(window, on_scroll)
-            glfw.set_key_callback(window, on_key)
-            glfw.set_window_close_callback(window, on_close)
-            glfw.set_framebuffer_size_callback(window, on_framebuffer_size)
-            if saved_pointer is not None:
-                key_mapper.warp_pointer(saved_pointer[0], saved_pointer[1])
-
-            live_mode = os.environ.get("BOOMER_LIVE") == "1"
-
-            # main render loop
-            while not quitting and not glfw.window_should_close(window):
-                now = time.monotonic()
-                if not windowed and now >= next_focus_check:
-                    next_focus_check = now + 0.1
-                    if x11_window:
-                        if key_mapper.focused_window() != x11_window:
-                            raise_window()
-                    elif now < startup_focus_deadline:
-                        raise_window()
-                elif not windowed and fullscreen_monitor is None:
-                    raise_window()
-
-                glfw.poll_events()
-
-                update_camera(camera, config, dt, mouse, Vec2(float(_fb[0]), float(_fb[1])))
-                update_flashlight(flashlight, dt)
-
-                draw_frame(
-                    camera.position,
-                    camera.scale,
-                    mouse.curr,
-                    flashlight.shadow,
-                    flashlight.radius,
-                )
-
-                glfw.swap_buffers(window)
-
-                if live_mode:
-                    screenshot = sct.grab(root)
-                    GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
-                    if screenshot.width != int(vertices[0]) or screenshot.height != int(vertices[6]):
-                        # dimensions changed - reallocate texture and update geometry
-                        vertices = build_vertices(screenshot.width, screenshot.height, numpy)
-                        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
-                        GL.glBufferData(
-                            GL.GL_ARRAY_BUFFER,
-                            vertices.nbytes,
-                            vertices,
-                            GL.GL_STATIC_DRAW,
-                        )
-                        upload_texture(GL, screenshot.width, screenshot.height, screenshot.bgra)
-                    else:
-                        # same size - glTexSubImage2D avoids reallocating texture storage
-                        GL.glTexSubImage2D(
-                            GL.GL_TEXTURE_2D, 0, 0, 0,
-                            screenshot.width, screenshot.height,
-                            GL.GL_BGRA, GL.GL_UNSIGNED_BYTE,
-                            screenshot.bgra,
-                        )
-
-            GL.glDeleteTextures(1, [texture])
-            GL.glDeleteVertexArrays(1, [vao])
-            GL.glDeleteBuffers(1, [vbo])
-            GL.glDeleteBuffers(1, [ebo])
-            GL.glDeleteProgram(shader_program)
-
-            if fatal_error is not None:
-                raise fatal_error
-    finally:
-        key_mapper.close()
-        if window is not None:
-            glfw.destroy_window(window)
-        glfw.terminate()
-
-
-def run(argv: list[str]) -> int:
-    try:
-        opts = parse_cli(argv)
-    except UsageError as exc:
-        print(str(exc), file=sys.stderr)
-        print(USAGE, file=sys.stderr)
-        return 1
-
-    if opts.action == "help":
-        print(USAGE)
-        return 0
-
-    if opts.action == "version":
-        print(boomer_version())
-        return 0
-
-    if opts.action == "new-config":
-        new_config_path = opts.new_config_path if opts.new_config_path is not None else opts.config_file
-        parent = new_config_path.parent
-        parent.mkdir(parents=True, exist_ok=True)
-        if new_config_path.exists():
-            sys.stdout.write(f"File {new_config_path} already exists. Replace it? [yn] ")
-            sys.stdout.flush()
-            if sys.stdin.read(1) != "y":
-                print("Disaster prevented")
-                return 0
-
-        generate_default_config(new_config_path)
-        print(f"Generated config at `{new_config_path}`")
-        return 0
-
-    sleep_seconds = math.floor(opts.delay_sec * 1000.0) / 1000.0
-    if sleep_seconds > 0.0:
-        time.sleep(sleep_seconds)
-
-    config = Config()
-    if opts.config_file.exists():
-        config = load_config(opts.config_file)
+    _libgl.glGenerateMipmap(GL_TEXTURE_2D)
+
+    if texture_filter != 0:
+        _libgl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        _libgl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
     else:
-        print(f"{opts.config_file} doesn't exist. Using default values. ", file=sys.stderr)
+        _libgl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        _libgl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
 
-    print(f"Using config: {config}")
-    run_boomer(opts.config_file, config, opts.windowed)
-    return 0
+    _libgl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER)
+    _libgl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER)
+    return tex
 
 
-def main() -> None:
-    sys.exit(run(sys.argv[1:]))
+def _create_geometry(width, height):
+    w = float(width)
+    h = float(height)
+    vertices = (c_float * 20)(
+        w, 0.0, 0.0, 1.0, 1.0,
+        w, h,   0.0, 1.0, 0.0,
+        0.0, h, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 1.0,
+    )
+    indices = (c_uint * 6)(0, 1, 3, 1, 2, 3)
+
+    vao = c_uint()
+    vbo = c_uint()
+    ebo = c_uint()
+    _libgl.glGenVertexArrays(1, byref(vao))
+    _libgl.glGenBuffers(1, byref(vbo))
+    _libgl.glGenBuffers(1, byref(ebo))
+
+    _libgl.glBindVertexArray(vao)
+    _libgl.glBindBuffer(GL_ARRAY_BUFFER, vbo)
+    _libgl.glBufferData(GL_ARRAY_BUFFER, ct.sizeof(vertices), vertices, GL_STATIC_DRAW)
+    _libgl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
+    _libgl.glBufferData(GL_ELEMENT_ARRAY_BUFFER, ct.sizeof(indices), indices, GL_STATIC_DRAW)
+
+    stride = 5 * ct.sizeof(c_float)
+    _libgl.glVertexAttribPointer(0, 3, GL_FLOAT, False_, stride, None)
+    _libgl.glEnableVertexAttribArray(0)
+    _libgl.glVertexAttribPointer(1, 2, GL_FLOAT, False_, stride, c_void_p(3 * ct.sizeof(c_float)))
+    _libgl.glEnableVertexAttribArray(1)
+
+    return vao, vbo, ebo
+
+
+# MAIN
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv
+
+    # cli parsing
+    windowed = False
+    delay_sec = 0.0
+    config_path = None
+    new_cfg_out = None
+
+    i = 1
+    argn = len(argv)
+    while i < argn:
+        arg = argv[i]
+        if arg in ("-h", "--help"):
+            print(USAGE)
+            return
+        elif arg in ("-V", "--version"):
+            print(f"pboomer-{VERSION}")
+            return
+        elif arg in ("-w", "--windowed"):
+            windowed = True
+        elif arg in ("-d", "--delay"):
+            i += 1
+            if i >= argn:
+                print(f"error: no value provided for {arg}", file=sys.stderr)
+                print(USAGE)
+                sys.exit(1)
+            try:
+                delay_sec = float(argv[i])
+            except ValueError:
+                print(f"error: invalid delay value: {argv[i]}", file=sys.stderr)
+                sys.exit(1)
+        elif arg in ("-c", "--config"):
+            i += 1
+            if i >= argn:
+                print(f"error: no value provided for {arg}", file=sys.stderr)
+                print(USAGE)
+                sys.exit(1)
+            config_path = argv[i]
+        elif arg == "--new-config":
+            if i + 1 < argn and not argv[i + 1].startswith("-"):
+                i += 1
+                new_cfg_out = argv[i]
+            else:
+                new_cfg_out = Config.default_config_path()
+            if new_cfg_out:
+                Config.write_default(new_cfg_out)
+                print(f"generated config at {new_cfg_out}")
+            return
+        else:
+            print(f"error: unknown flag `{arg}`", file=sys.stderr)
+            print(USAGE)
+            sys.exit(1)
+        i += 1
+
+    # delay
+    if delay_sec > 0.0:
+        time.sleep(delay_sec)
+
+    # resolve config path
+    if config_path is None:
+        config_path = Config.default_config_path()
+
+    if config_path:
+        print(f"using config: {config_path}")
+
+    # x11 init
+    display = _x11.XOpenDisplay(None)
+    if not display:
+        print("error: failed to open display", file=sys.stderr)
+        sys.exit(1)
+
+    _x11.XSetErrorHandler(_x11_error_handler_ref)
+
+    root = _x11.XDefaultRootWindow(display)
+    root_attrs = XWindowAttributes()
+    _x11.XGetWindowAttributes(display, root, byref(root_attrs))
+
+    sc = _xr.XRRGetScreenInfo(display, root)
+    refresh_rate = _xr.XRRConfigCurrentRate(sc)
+    _xr.XRRFreeScreenConfigInfo(sc)
+    if refresh_rate <= 0:
+        refresh_rate = 60
+
+    screen_w = root_attrs.width
+    screen_h = root_attrs.height
+    print(f"screen: {screen_w}x{screen_h} @ {refresh_rate}hz")
+
+    # GLX check
+    glx_major = c_int()
+    glx_minor = c_int()
+    if not _libgl.glXQueryVersion(display, byref(glx_major), byref(glx_minor)):
+        print("error: glXQueryVersion failed", file=sys.stderr)
+        sys.exit(1)
+    if glx_major.value < 1 or (glx_major.value == 1 and glx_minor.value < 3):
+        print("error: need GLX >= 1.3", file=sys.stderr)
+        sys.exit(1)
+    print(f"glx version: {glx_major.value}.{glx_minor.value}")
+
+    # create window
+    glx_attrs = (c_int * 5)(GLX_RGBA, GLX_DEPTH_SIZE, 24, GLX_DOUBLEBUFFER, 0)
+    vi = _libgl.glXChooseVisual(display, 0, glx_attrs)
+    if not vi:
+        print("error: no appropriate visual found", file=sys.stderr)
+        sys.exit(1)
+
+    vi_info = vi.contents
+    print(f"visual id: 0x{vi_info.visualid:x}")
+
+    swa = XSetWindowAttributes()
+    swa.colormap = _x11.XCreateColormap(display, root, vi_info.visual, AllocNone)
+    swa.event_mask = (ButtonPressMask | ButtonReleaseMask | KeyPressMask |
+                      KeyReleaseMask | PointerMotionMask | ExposureMask)
+    mask = CWColormap | CWEventMask
+
+    if not windowed:
+        swa.override_redirect = 1
+        swa.save_under = 1
+        mask |= CWOverrideRedirect | CWSaveUnder
+
+    window = _x11.XCreateWindow(
+        display, root,
+        0, 0, screen_w, screen_h, 0,
+        vi_info.depth, InputOutput, vi_info.visual,
+        mask, byref(swa),
+    )
+
+    _x11.XStoreName(display, window, b"pboomer")
+    ch = XClassHint(b"pboomer", b"Pboomer")
+    _x11.XSetClassHint(display, window, byref(ch))
+
+    wm_delete_window = c_ulong(0)
+    if windowed:
+        wm_delete_window = c_ulong(_x11.XInternAtom(display, b"WM_DELETE_WINDOW", False_))
+        _x11.XSetWMProtocols(display, window, byref(wm_delete_window), 1)
+
+    _x11.XMapWindow(display, window)
+
+    gl_ctx = _libgl.glXCreateContext(display, vi, None, True_)
+    if not gl_ctx:
+        print("error: failed to create glx context", file=sys.stderr)
+        sys.exit(1)
+    _libgl.glXMakeCurrent(display, window, gl_ctx)
+    _x11.XFree(vi)
+
+    original_focus = c_ulong()
+    revert = c_int()
+    _x11.XGetInputFocus(display, byref(original_focus), byref(revert))
+
+    # screenshot
+    img_ptr = _x11.XGetImage(display, root, 0, 0, screen_w, screen_h, AllPlanes, ZPixmap)
+    if not img_ptr:
+        print("error: failed to take screenshot", file=sys.stderr)
+        sys.exit(1)
+    img = img_ptr.contents
+    print(f"screenshot: {img.width}x{img.height}")
+
+    # opengl init
+    _libgl.glEnable(GL_TEXTURE_2D)
+
+    ov = _libgl.glGetString(0x1F02)
+    gl_version = ov.decode() if ov else "unknown"
+    print(f"opengl version: {gl_version}")
+
+    program, uniform_locs = _build_program()
+
+    # app init
+    app = App(Config(), config_path)
+
+    texture = _create_texture(img, app.config.texture_filter)
+    vao, vbo, ebo = _create_geometry(img.width, img.height)
+
+    # seed mouse position
+    root_ret = c_ulong()
+    child_ret = c_ulong()
+    rx = c_int(); ry = c_int(); wx = c_int(); wy = c_int(); msk = c_uint()
+    _x11.XQueryPointer(display, root,
+                       byref(root_ret), byref(child_ret),
+                       byref(rx), byref(ry), byref(wx), byref(wy), byref(msk))
+    app.seed_mouse(wx.value, wy.value)
+
+    dt = 1.0 / float(refresh_rate)
+    app.state.dt = dt
+
+    # main loop
+    event = XEvent()
+    wa = XWindowAttributes()
+    gl = _libgl
+    x = _x11
+
+    # local bindings for speed
+    _glUniform2f        = gl.glUniform2f
+    _glUniform1f        = gl.glUniform1f
+    _glClearColor       = gl.glClearColor
+    _glClear            = gl.glClear
+    _glUseProgram       = gl.glUseProgram
+    _glBindTexture      = gl.glBindTexture
+    _glBindVertexArray  = gl.glBindVertexArray
+    _glDrawElements     = gl.glDrawElements
+    _glXSwapBuffers     = gl.glXSwapBuffers
+    _glFinish           = gl.glFinish
+    _glViewport         = gl.glViewport
+    _XPending           = x.XPending
+    _XNextEvent         = x.XNextEvent
+    _XLookupKeysym      = x.XLookupKeysym
+    _XSetInputFocus     = x.XSetInputFocus
+
+    ulocs = uniform_locs
+    w = window
+
+    while app.state.running:
+        if not windowed:
+            _XSetInputFocus(display, w, RevertToParent, CurrentTime)
+
+        x.XGetWindowAttributes(display, w, byref(wa))
+        ww = wa.width
+        wh = wa.height
+        _glViewport(0, 0, ww, wh)
+
+        # drain events
+        while _XPending(display) > 0:
+            _XNextEvent(display, byref(event))
+            ev_type = event.type
+
+            if ev_type == KeyPress:
+                kp = cast(byref(event), POINTER(XKeyEvent))
+                keysym = _XLookupKeysym(kp, 0)
+                app._handle_keypress(keysym)
+            elif ev_type == MotionNotify:
+                mp = cast(byref(event), POINTER(XMotionEvent))
+                app._handle_mousemove(mp, refresh_rate)
+            elif ev_type == ButtonPress:
+                bp = cast(byref(event), POINTER(XButtonEvent))
+                app._handle_buttonpress(bp)
+            elif ev_type == ButtonRelease:
+                bp = cast(byref(event), POINTER(XButtonEvent))
+                app._handle_buttonrelease(bp)
+            elif ev_type == ClientMessage:
+                if event.xclient.data.l[0] == wm_delete_window.value:
+                    app.state.running = False
+
+        app.camera_update(ww, wh)
+        app.flashlight_update()
+
+        # render
+        cam = app.state.camera
+        fl = app.state.flashlight
+        m = app.state.mouse
+
+        _glClearColor(0.1, 0.1, 0.1, 1.0)
+        _glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        _glUseProgram(program)
+
+        _glUniform2f(ulocs["camera_pos"],      cam.position_x,     cam.position_y)
+        _glUniform1f(ulocs["camera_scale"],     cam.scale)
+        _glUniform2f(ulocs["window_size"],      float(ww),          float(wh))
+        _glUniform2f(ulocs["screenshot_size"],  float(img.width),   float(img.height))
+        _glUniform2f(ulocs["cursor_pos"],       m.curr_x,           m.curr_y)
+        _glUniform1f(ulocs["fl_shadow"],        fl.shadow)
+        _glUniform1f(ulocs["fl_radius"],        fl.radius)
+        _glUniform1f(ulocs["fl_feather"],       app.config.feather)
+        _glUniform1f(ulocs["mirror"],           1.0 if app.state.mirror else 0.0)
+
+        _glBindTexture(GL_TEXTURE_2D, texture)
+        _glBindVertexArray(vao)
+        _glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
+
+        _glXSwapBuffers(display, w)
+        _glFinish()
+
+    # cleanup
+    if not windowed:
+        x.XSetInputFocus(display, original_focus, RevertToParent, CurrentTime)
+        x.XSync(display, False_)
+
+    _libgl.glDeleteVertexArrays(1, byref(vao))
+    _libgl.glDeleteBuffers(1, byref(vbo))
+    _libgl.glDeleteBuffers(1, byref(ebo))
+    _libgl.glDeleteProgram(program)
+    _libgl.glDeleteTextures(1, byref(texture))
+
+    _x11.XDestroyImage(img_ptr)
+    _libgl.glXMakeCurrent(display, 0, None)
+    _libgl.glXDestroyContext(display, gl_ctx)
+    _x11.XDestroyWindow(display, window)
+    _x11.XCloseDisplay(display)
 
 
 if __name__ == "__main__":
