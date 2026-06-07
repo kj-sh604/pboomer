@@ -1,28 +1,39 @@
 pboomer
+-------
 
-small python rewrite of boomer (x11 zoomer application from Tsoding).
+small python re-implementation of boomer (x11 zoomer application by Tsoding).
 
-arch linux deps
-- python-mss
-- python-opengl
-- python-glfw
-- python-numpy
+uses stdlib ctypes only.
+
+arch linux deps (system packages)
+  - libx11
+  - libxrandr
+  - mesa
+
+other distros:
+  - install equivalent X11 + Mesa development libraries.
 
 quick run
-./pboomer
-./pboomer -w
-./pboomer --help
+  ./pboomer
+  ./pboomer -w
+  ./pboomer --help
 
 config
+------
 default path:
-$XDG_CONFIG_HOME/boomer/config
+  $XDG_CONFIG_HOME/boomer/config
+
 fallback:
-~/.config/boomer/config
+  ~/.config/boomer/config
 
 generate default config:
-./pboomer --new-config
+  ./pboomer --new-config
 
-notes
-- key remaps from x11 are respected (example: caps as escape)
-- use BOOMER_LIVE=1 for live screen refresh mode
-- use BOOMER_DEVELOPER=1 for shader hot reload (ctrl+r)
+license
+-------
+  0BSD
+
+
+links
+-------
+  - original boomer: https://github.com/tsoding/boomer
