@@ -10,3 +10,4 @@ remove:
 	rm -f $(PREFIX)/bin/pboomer
 
 .PHONY: install remove
+
